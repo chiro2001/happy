@@ -59,6 +59,19 @@ function createTauriSocket(url: string, headers: Record<string, string>): WebSoc
         onclose: ((event: CloseEvent) => void) | null;
         id: number | null;
         closed: boolean;
+        /**
+         * Frames produced before the connection id existed.
+         *
+         * The id arrives on the `invoke` response, while incoming frames arrive
+         * on the channel — two different routes back from Rust, with no
+         * ordering between them. The first server frame is `session.created`,
+         * and the reply to it (`session.update`) is what configures the whole
+         * session. When that frame wins the race, the reply used to hit a null
+         * id and be dropped, leaving the server waiting for a configuration it
+         * had already asked for: the app sat on "connecting" with no error, and
+         * only succeeded on the runs where the id happened to arrive first.
+         */
+        outbox: string[];
         send(data: string): void;
         close(): void;
     } = {
@@ -69,9 +82,18 @@ function createTauriSocket(url: string, headers: Record<string, string>): WebSoc
         onclose: null,
         id: null,
         closed: false,
+        outbox: [],
 
         send(data: string) {
-            if (this.id === null) return;
+            if (this.closed) return;
+            if (this.id === null) {
+                // Held, not dropped. Bounded because the only things that can
+                // arrive here are the frames a protocol handshake produces,
+                // and a connection that never resolves should not accumulate
+                // them for the life of the app.
+                if (this.outbox.length < 32) this.outbox.push(data);
+                return;
+            }
             // The plugin rejects on a dead socket; the client already treats a
             // failed send as a dropped message, so swallow rather than throw
             // into a callback that has no way to handle it.
@@ -84,6 +106,7 @@ function createTauriSocket(url: string, headers: Record<string, string>): WebSoc
         close() {
             this.closed = true;
             this.readyState = 3; // CLOSED
+            this.outbox.length = 0;
             const id = this.id;
             this.id = null;
             if (id === null) return;
@@ -128,8 +151,9 @@ function createTauriSocket(url: string, headers: Record<string, string>): WebSoc
         onMessage,
     })
         .then((id) => {
-            // `close()` may have run while the handshake was still in flight.
-            if (socket.closed) {
+            // `close()` may have run while the handshake was still in flight,
+            // and a read error would have closed it from the other side.
+            if (socket.closed || socket.readyState === 3) {
                 void invoke('plugin:websocket|send', {
                     id,
                     message: { type: 'Close', data: { code: 1000, reason: 'closed before open' } },
@@ -138,6 +162,18 @@ function createTauriSocket(url: string, headers: Record<string, string>): WebSoc
             }
             socket.id = id;
             socket.readyState = 1; // OPEN
+
+            // Flush in order: a protocol handshake depends on the sequence, so
+            // these cannot be fire-and-forget.
+            const pending = socket.outbox;
+            socket.outbox = [];
+            for (const data of pending) {
+                void invoke('plugin:websocket|send', {
+                    id,
+                    message: { type: 'Text', data },
+                }).catch(() => {});
+            }
+
             socket.onopen?.({} as Event);
         })
         .catch((error) => {

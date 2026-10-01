@@ -102,6 +102,82 @@ describe('Tauri websocket adapter', () => {
         expect(received).toEqual(['{"type":"session.created"}']);
     });
 
+    /**
+     * The second half of the same race, and the one that actually presented as
+     * "clicking the microphone usually does nothing".
+     *
+     * The id arrives on the `invoke` response; frames arrive on the channel.
+     * There is no ordering between those two routes, so `session.created` can
+     * be handled while the id is still unknown. The reply to it is
+     * `session.update`, which configures the entire session — dropping it left
+     * the server waiting for a configuration it had already asked for, and the
+     * app sat on "connecting" with nothing logged, because nothing had failed.
+     */
+    it('sends a reply that was produced before the connection id arrived', async () => {
+        const { createDefaultSocket } = await loadAdapter();
+        const socket = createDefaultSocket('wss://example.test/ws', { Authorization: 'Bearer k' });
+        // Stand in for the protocol client: reply to session.created at once.
+        socket.onmessage = () => socket.send('{"type":"session.update"}');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        harness.onmessage?.({ type: 'Text', data: '{"type":"session.created"}' });
+
+        // Nothing can go out yet — the id does not exist — but nothing may be
+        // thrown away either.
+        const beforeId = harness.invokes.filter((i) => i.cmd === 'plugin:websocket|send');
+        expect(beforeId).toHaveLength(0);
+
+        harness.releaseConnect?.(7);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const sent = harness.invokes.filter((i) => i.cmd === 'plugin:websocket|send');
+        expect(sent).toHaveLength(1);
+        expect(sent[0].args).toMatchObject({
+            id: 7,
+            message: { type: 'Text', data: '{"type":"session.update"}' },
+        });
+    });
+
+    it('preserves the order of frames buffered before the id arrived', async () => {
+        const { createDefaultSocket } = await loadAdapter();
+        const socket = createDefaultSocket('wss://example.test/ws', {});
+        await Promise.resolve();
+        await Promise.resolve();
+
+        socket.send('first');
+        socket.send('second');
+        harness.releaseConnect?.(8);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const texts = harness.invokes
+            .filter((i) => i.cmd === 'plugin:websocket|send')
+            .map((i) => (i.args.message as { data?: string }).data);
+        expect(texts).toEqual(['first', 'second']);
+    });
+
+    it('drops buffered frames when the socket is closed before it opens', async () => {
+        const { createDefaultSocket } = await loadAdapter();
+        const socket = createDefaultSocket('wss://example.test/ws', {});
+        await Promise.resolve();
+        await Promise.resolve();
+
+        socket.send('never sent');
+        socket.close();
+        harness.releaseConnect?.(9);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const texts = harness.invokes
+            .filter((i) => i.cmd === 'plugin:websocket|send')
+            .map((i) => (i.args.message as { data?: string }).data);
+        expect(texts).not.toContain('never sent');
+    });
+
     it('sends headers as pairs, matching the Rust config type', async () => {
         const { createDefaultSocket } = await loadAdapter();
         createDefaultSocket('wss://example.test/ws', { Authorization: 'Bearer k', 'X-A': 'b' });
