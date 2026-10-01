@@ -332,25 +332,34 @@ export class CodexAppServerClient {
         error: unknown,
         source: string,
         /**
-         * Which thread the completion came from, when it is not the session's
-         * own. Codex reports `turn/started` and `turn/completed` for every
-         * thread it runs, subagents included, and the notifications carry no
-         * other hint of their origin. Without this the child's turn ending is
-         * indistinguishable from the parent's, which ends the session's answer
-         * while the parent is still working.
+         * Which thread reported this boundary. Null means the session's own.
          */
-        scope: { subagent?: string } = {},
+        originThreadId: string | null = null,
     ): void {
         const aborted = status === 'cancelled' || status === 'canceled' || status === 'aborted' || status === 'interrupted';
 
-        this.tryResolvePendingTurn(aborted, turnId, source);
-        this._turnId = null;
+        // A child's boundary still travels — it is how the mapper closes the
+        // agent — but it must not touch the bookkeeping that describes *this*
+        // session's turn. All three of these are about the session's own
+        // thread: which turn is current, what the caller is waiting on, and
+        // which completions have already been reported. A subagent finishing
+        // is not a fact about any of them, and letting it in both ends the
+        // session's turn early and swallows the real completion as a
+        // duplicate of the child's turn id.
+        const scope: { subagent?: string } = originThreadId && originThreadId !== this._threadId
+            ? { subagent: originThreadId }
+            : {};
 
-        if (turnId && this.completedTurnIds.has(turnId)) {
-            return;
-        }
-        if (turnId) {
-            this.completedTurnIds.add(turnId);
+        if (!scope.subagent) {
+            this.tryResolvePendingTurn(aborted, turnId, source);
+            this._turnId = null;
+
+            if (turnId && this.completedTurnIds.has(turnId)) {
+                return;
+            }
+            if (turnId) {
+                this.completedTurnIds.add(turnId);
+            }
         }
 
         if (aborted) {
@@ -374,6 +383,39 @@ export class CodexAppServerClient {
     }
 
     /**
+     * The thread a raw notification came from, when it names one.
+     *
+     * Every lifecycle notification carries the thread it describes — `turn/
+     * started`, `turn/completed` and `thread/status/changed` alike — which is
+     * the only thing that distinguishes the session's own turn boundaries from
+     * the ones its subagents report.
+     */
+    private notificationThreadId(params: unknown): string | null {
+        return stringOrNull((params as { threadId?: unknown } | undefined)?.threadId);
+    }
+
+    /**
+     * Whether a lifecycle notification describes the session's own thread.
+     *
+     * Codex reports turn boundaries for every thread it runs. The session's
+     * turn state — which turn is current, what `sendTurnAndWait` is waiting
+     * for, which completions have already been reported — is a statement about
+     * one thread, so it may only be driven by that thread's notifications.
+     * Measured with `probe-turn-threads.mjs`: a child thread is reported
+     * `idle` before it is reported `active`, so an unguarded `idle` handler
+     * ends the session's turn while its own thread is still working, and then
+     * discards the real completion as a duplicate.
+     *
+     * A notification with no thread id at all counts as this session's: the
+     * legacy protocol does not label its events and has no subagent threads to
+     * confuse it with.
+     */
+    private isOwnThread(params: unknown): boolean {
+        const threadId = this.notificationThreadId(params);
+        return threadId === null || threadId === this._threadId;
+    }
+
+    /**
      * Which subagent a notification belongs to, for spreading into its event.
      *
      * Codex runs each subagent on its own thread, and the only place that shows
@@ -388,7 +430,7 @@ export class CodexAppServerClient {
      * -protocol id on its side.
      */
     private childThreadScope(params: unknown): { subagent?: string } {
-        const threadId = stringOrNull((params as { threadId?: unknown } | undefined)?.threadId);
+        const threadId = this.notificationThreadId(params);
         if (!threadId || threadId === this._threadId) {
             return {};
         }
@@ -402,10 +444,17 @@ export class CodexAppServerClient {
 
         if (method === 'turn/started') {
             const turnId = this.extractTurnId(params);
-            if (turnId) {
-                this._turnId = turnId;
+            // A child's turn starting is not this session's turn starting. It
+            // is still forwarded (the mapper announces the agent with it), but
+            // it must not become the turn `sendTurnAndWait` is waiting for —
+            // that is exactly how a subagent came to be waited on instead of
+            // the session's own work.
+            if (this.isOwnThread(params)) {
+                if (turnId) {
+                    this._turnId = turnId;
+                }
+                this.markPendingTurnStarted(turnId);
             }
-            this.markPendingTurnStarted(turnId);
             this.eventHandler?.({
                 type: 'task_started',
                 ...(turnId ? { turn_id: turnId } : {}),
@@ -420,15 +469,19 @@ export class CodexAppServerClient {
                 this.extractTurnStatus(params),
                 params?.turn?.error ?? params?.error,
                 method,
-                this.childThreadScope(params),
+                this.notificationThreadId(params),
             );
             return true;
         }
 
         if (method === 'thread/status/changed') {
             const statusType = params?.status?.type;
-            if (statusType === 'idle' && this.pendingTurnCompletion) {
-                this.emitRawTurnCompletion(this._turnId, 'completed', null, method, this.childThreadScope(params));
+            // Only the session's own thread going idle means the session's turn
+            // is over. A thread reports `idle` the moment it is created, before
+            // its first turn — which is how a subagent being spawned once ended
+            // the session's answer on the spot.
+            if (statusType === 'idle' && this.pendingTurnCompletion && this.isOwnThread(params)) {
+                this.emitRawTurnCompletion(this._turnId, 'completed', null, method, this.notificationThreadId(params));
             }
             return true;
         }
@@ -634,13 +687,17 @@ export class CodexAppServerClient {
                 });
             }
 
-            if (item.phase === 'final_answer' && this.pendingTurnCompletion) {
+            // The fallback exists because Codex may omit `turn/completed` for
+            // the session's own thread. A child's final answer says nothing
+            // about the session's turn, and treating it as one is what let a
+            // subagent's reply end the answer its parent was still writing.
+            if (item.phase === 'final_answer' && this.pendingTurnCompletion && this.isOwnThread(params)) {
                 this.emitRawTurnCompletion(
                     this.extractTurnId(params),
                     'completed',
                     null,
                     `${method}:final_answer`,
-                    this.childThreadScope(params),
+                    this.notificationThreadId(params),
                 );
             }
             return true;
@@ -1619,17 +1676,23 @@ export class CodexAppServerClient {
             this.notificationProtocol = 'legacy';
             const msg = params?.msg;
             if (msg) {
+                // The legacy protocol labels its turn events with `subagent`
+                // rather than a thread id, but the rule is the same one the raw
+                // path enforces: a subagent's boundary is not this session's,
+                // so it may be forwarded without becoming what the caller
+                // waits on.
+                const belongsToSubagent = typeof msg.subagent === 'string' && msg.subagent.length > 0;
                 // Extract turn_id from task_started events
-                if (msg.type === 'task_started' && msg.turn_id) {
+                if (msg.type === 'task_started' && msg.turn_id && !belongsToSubagent) {
                     this._turnId = msg.turn_id;
                 }
-                if (msg.type === 'task_started') {
+                if (msg.type === 'task_started' && !belongsToSubagent) {
                     this.markPendingTurnStarted(msg.turn_id ?? msg.turnId ?? null);
                 }
                 // Fire event handler first (so consumer processes the event)
                 this.eventHandler?.(msg);
                 // Then resolve turn completion promise
-                if (msg.type === 'task_complete' || msg.type === 'turn_aborted') {
+                if ((msg.type === 'task_complete' || msg.type === 'turn_aborted') && !belongsToSubagent) {
                     const turnId = msg.turn_id ?? msg.turnId ?? null;
                     // Mark as completed so v2 turn/completed doesn't duplicate
                     if (turnId) {
@@ -1656,7 +1719,9 @@ export class CodexAppServerClient {
             method === 'turn/completed' || method === 'thread/status/changed') {
             logger.debug(`[CodexAppServer] Lifecycle notification: ${method}`);
             // Mark the turn as started so the completion guard lets it through.
-            if (method === 'turn/started') {
+            // Same rule as the raw path: a child thread's boundaries are not
+            // this session's, so they never become what the caller waits on.
+            if (method === 'turn/started' && this.isOwnThread(params)) {
                 const turnId = this.extractTurnId(params);
                 if (turnId) {
                     this._turnId = turnId;
@@ -1672,6 +1737,7 @@ export class CodexAppServerClient {
                     this.extractTurnStatus(params),
                     params?.turn?.error ?? params?.error,
                     method,
+                    this.notificationThreadId(params),
                 );
             }
             return;

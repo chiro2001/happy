@@ -1144,6 +1144,127 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it('keeps a subagent\'s turn boundaries out of the session\'s own turn', async () => {
+        // Measured against a real app-server (probe-turn-threads.mjs): every
+        // `turn/started`, `turn/completed` and `thread/status/changed` names the
+        // thread it belongs to, and a child thread is reported `idle` before it
+        // is reported `active`. Unguarded, that idle ends the session's turn
+        // while its own thread is still working, and the real completion is
+        // then discarded as a duplicate — which leaves the turn running forever.
+        let releaseRoot: (() => void) | null = null;
+        const rootGate = new Promise<void>((resolve) => { releaseRoot = resolve; });
+
+        const proc = createMockProcess({
+            pid: 3201,
+            onRequest: (msg, stdout) => {
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: {
+                                thread: { id: 'thread-root', path: '/tmp/thread-root' },
+                                model: 'gpt-test',
+                                modelProvider: 'openai',
+                                cwd: '/tmp/project',
+                                approvalPolicy: 'never',
+                                sandbox: { type: 'dangerFullAccess' },
+                                reasoningEffort: null,
+                            },
+                        });
+                    }, 0);
+                }
+
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: { turn: { id: 'turn-root', items: [], status: 'inProgress', error: null } },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'turn/started',
+                            params: { threadId: 'thread-root', turn: { id: 'turn-root', items: [], status: 'inProgress', error: null } },
+                        });
+
+                        // A subagent thread is created: idle on creation, then
+                        // active, then its own turn — none of which is the
+                        // session's.
+                        pushJsonLine(stdout, {
+                            method: 'thread/status/changed',
+                            params: { threadId: 'thread-child', status: { type: 'idle', activeFlags: [] } },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'turn/started',
+                            params: { threadId: 'thread-child', turn: { id: 'turn-child', items: [], status: 'inProgress', error: null } },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'item/completed',
+                            params: {
+                                threadId: 'thread-child',
+                                turnId: 'turn-child',
+                                item: { type: 'agentMessage', id: 'child-msg', text: 'subagent done', phase: 'final_answer' },
+                            },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'turn/completed',
+                            params: { threadId: 'thread-child', turn: { id: 'turn-child', items: [], status: 'completed', error: null } },
+                        });
+
+                        // The session's own thread finishes only when the test
+                        // lets it, so "resolved too early" is observable rather
+                        // than a matter of timing.
+                        void rootGate.then(() => {
+                            pushJsonLine(stdout, {
+                                method: 'turn/completed',
+                                params: { threadId: 'thread-root', turn: { id: 'turn-root', items: [], status: 'completed', error: null } },
+                            });
+                        });
+                    }, 0);
+                }
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const events: Array<Record<string, unknown>> = [];
+        client.setEventHandler((msg) => { events.push(msg as Record<string, unknown>); });
+
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'never',
+            sandbox: 'danger-full-access',
+        });
+
+        const settled = { done: false };
+        const turn = client.sendTurnAndWait('spawn one');
+        const pending = turn.then(() => { settled.done = true; });
+
+        // The subagent finishes first, and that must not be what the session
+        // was waiting for.
+        await waitFor(() => events.some((event) => event.type === 'task_complete' && event.subagent === 'thread-child'));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(settled.done).toBe(false);
+
+        releaseRoot!();
+        await expect(turn).resolves.toEqual({ aborted: false });
+        await pending;
+
+        // The child's boundary still travels — it is how the mapper closes the
+        // agent — but only the session's own thread completes the session.
+        const completions = events.filter((event) => event.type === 'task_complete');
+        expect(completions).toHaveLength(2);
+        expect(completions.filter((event) => event.subagent === 'thread-child')).toEqual([
+            expect.objectContaining({ turn_id: 'turn-child' }),
+        ]);
+        expect(completions.filter((event) => !event.subagent)).toEqual([
+            expect.objectContaining({ turn_id: 'turn-root' }),
+        ]);
+
+        await client.disconnect();
+    });
+
     it('maps raw goal notifications into legacy goal events', async () => {
         const proc = createMockProcess({
             pid: 3002,
