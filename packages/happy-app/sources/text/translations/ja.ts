@@ -952,6 +952,10 @@ export const ja: TranslationStructure = {
         subagentTitle: ({ path }: { path: string }) => `サブエージェント ${path}`,
         subagentUntitled: 'サブエージェント',
         subagentEmpty: 'このサブエージェントはまだ出力していません。',
+        subagentListTitle: 'サブエージェント',
+        subagentListRunning: ({ count, total }: { count: number; total: number }) => `${total} 件中 ${count} 件が実行中…`,
+        subagentListSettled: ({ count }: { count: number }) => `${count} 件完了`,
+        subagentListEmpty: 'このセッションはまだサブエージェントを起動していません。',
         subagentStatus: {
             running: '実行中…',
             completed: '完了',

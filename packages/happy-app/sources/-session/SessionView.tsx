@@ -16,6 +16,8 @@ import { PendingChatPlaceholder } from '@/components/PendingChatPlaceholder';
 import { WorktreeTabStrip, WORKTREE_TAB_STRIP_HEIGHT } from '@/components/WorktreeTabStrip';
 import { useProjectWorktreeSummary } from '@/hooks/useProjectWorktree';
 import { ChatList } from '@/components/ChatList';
+import { SubagentListSheet } from '@/components/SubagentListSheet';
+import { SubagentHeaderButton, subagentHeaderRowStyles } from '@/components/SubagentHeaderButton';
 import { Deferred } from '@/components/Deferred';
 import { EmptyMessages } from '@/components/EmptyMessages';
 import { Avatar } from '@/components/Avatar';
@@ -30,7 +32,7 @@ import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, s
 import { sessionAbort, sessionCancelCommunication, sessionGoalAction, sessionSetAgentModes, spawnSideChat, sessionKill, sessionArchive } from '@/sync/ops';
 import { dismissPendingChat, getPendingChat, setPendingChatDraft, submitPendingChat, usePendingChat, type PendingChat } from '@/sync/pendingChats';
 import { claimComposerFocus } from '@/utils/composerFocus';
-import { storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionGitStatus, useSessionMessages, useSessionPendingCommunications, useSessionAvatar, useSessionUsage, useSetting, useSideChatSessions } from '@/sync/storage';
+import { storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionGitStatus, useSessionMessages, useSessionPendingCommunications, useSessionAvatar, useSessionSubagents, useSessionUsage, useSetting, useSideChatSessions } from '@/sync/storage';
 import { useSession } from '@/sync/storage';
 import { getSessionForkSource } from '@/utils/sessionFork';
 import { useHappyAction } from '@/hooks/useHappyAction';
@@ -113,6 +115,7 @@ export const SessionView = React.memo((props: { id: string }) => {
         [headerSession?.metadata, gitStatus],
     );
     const isDataReady = useIsDataReady();
+    const subagents = useSessionSubagents(sessionId ?? '');
     // Grouped by project, a chat is one tab of its checkout: the header names
     // the checkout, and the strip under it holds the checkout's chats.
     const worktree = useProjectWorktreeSummary(headerSessionId);
@@ -423,24 +426,56 @@ export const SessionView = React.memo((props: { id: string }) => {
             isConnected,
         };
     }, [session, isDataReady, pendingChat]);
-    const headerRight = session && !isTablet && Platform.OS !== 'web'
+    // Subagents open as their own page rather than expanding in place: an agent
+    // can run for minutes and emit hundreds of rows, and nesting that in the
+    // conversation would bury the main thread it is only one part of.
+    const handleOpenSubagent = React.useCallback((subagentId: string) => {
+        if (sessionId) router.push(`/session/${sessionId}/subagent/${subagentId}`);
+    }, [router, sessionId]);
+
+    const openSubagentList = React.useCallback(() => {
+        if (!session) return;
+        Modal.show({
+            component: SubagentListSheet,
+            props: { sessionId: session.id, onOpenSubagent: handleOpenSubagent },
+        } as any);
+    }, [session?.id, handleOpenSubagent]);
+
+    // The agents a session has spawned are otherwise only reachable by finding
+    // their one-line pointer in the conversation, which is fine while a run is
+    // recent and hopeless once it has scrolled away. The header keeps the index
+    // one tap from anywhere in the session.
+    const subagentCount = Object.keys(subagents).length;
+
+    // Where the avatar lives is a property of the layout — phones put it in the
+    // header, tablets and the web put it elsewhere — but the agent index is
+    // wanted on all of them, and it is the only entry point on a device whose
+    // layout has no room for the conversation to be read all at once. So the
+    // avatar keeps its old condition and the index does not.
+    const showsAvatarInHeader = !isTablet && Platform.OS !== 'web';
+    const headerRight = session && (showsAvatarInHeader || subagentCount > 0)
         ? (
-            <Pressable
-                onPress={() => router.push(`/session/${session.id}/info`)}
-                hitSlop={10}
-            >
-                <Avatar
-                    bot={!!session.metadata?.bot}
-                    id={getSessionAvatarId(session)}
-                    size={28}
-                    monochrome={!headerProps.isConnected}
-                    flavor={session.metadata?.flavor}
-                    clientId={session.metadata?.client?.id}
-                    badgeLocation="sessionHeader"
-                    imageUrl={avatar?.uri}
-                    thumbhash={avatar?.thumbhash}
-                />
-            </Pressable>
+            <View style={subagentHeaderRowStyles.row}>
+                <SubagentHeaderButton count={subagentCount} onPress={openSubagentList} />
+                {showsAvatarInHeader && (
+                    <Pressable
+                        onPress={() => router.push(`/session/${session.id}/info`)}
+                        hitSlop={10}
+                    >
+                        <Avatar
+                            bot={!!session.metadata?.bot}
+                            id={getSessionAvatarId(session)}
+                            size={28}
+                            monochrome={!headerProps.isConnected}
+                            flavor={session.metadata?.flavor}
+                            clientId={session.metadata?.client?.id}
+                            badgeLocation="sessionHeader"
+                            imageUrl={avatar?.uri}
+                            thumbhash={avatar?.thumbhash}
+                        />
+                    </Pressable>
+                )}
+            </View>
         )
         : null;
 

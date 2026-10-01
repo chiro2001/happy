@@ -952,6 +952,10 @@ export const zhHans: TranslationStructure = {
         subagentTitle: ({ path }: { path: string }) => `子代理 ${path}`,
         subagentUntitled: '子代理',
         subagentEmpty: '这个子代理还没有产生输出。',
+        subagentListTitle: '子代理',
+        subagentListRunning: ({ count, total }: { count: number; total: number }) => `${total} 个里有 ${count} 个进行中…`,
+        subagentListSettled: ({ count }: { count: number }) => `${count} 个已完成`,
+        subagentListEmpty: '这个会话还没有派出过子代理。',
         subagentStatus: {
             running: '进行中…',
             completed: '已完成',

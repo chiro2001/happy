@@ -957,6 +957,10 @@ export const ru: TranslationStructure = {
         subagentTitle: ({ path }: { path: string }) => `Субагент ${path}`,
         subagentUntitled: 'Субагент',
         subagentEmpty: 'Этот субагент пока не выдал никаких данных.',
+        subagentListTitle: 'Субагенты',
+        subagentListRunning: ({ count, total }: { count: number; total: number }) => `работают ${count} из ${total}…`,
+        subagentListSettled: ({ count }: { count: number }) => `${count} завершено`,
+        subagentListEmpty: 'Этот сеанс ещё не запускал субагентов.',
         subagentStatus: {
             running: 'Выполняется…',
             completed: 'Завершено',

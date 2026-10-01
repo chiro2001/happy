@@ -951,6 +951,10 @@ export const es: TranslationStructure = {
         subagentTitle: ({ path }: { path: string }) => `Subagente ${path}`,
         subagentUntitled: 'Subagente',
         subagentEmpty: 'Este subagente aún no ha producido salida.',
+        subagentListTitle: 'Subagentes',
+        subagentListRunning: ({ count, total }: { count: number; total: number }) => `${count} de ${total} trabajando…`,
+        subagentListSettled: ({ count }: { count: number }) => `${count} finalizados`,
+        subagentListEmpty: 'Esta sesión aún no ha lanzado ningún subagente.',
         subagentStatus: {
             running: 'En curso…',
             completed: 'Completado',

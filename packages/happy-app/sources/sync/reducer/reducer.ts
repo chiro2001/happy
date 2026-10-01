@@ -1581,7 +1581,13 @@ function applySubagentLifecycle(
     // A `start` also means the agent is running: an agent that had stopped and
     // came back (a `sendInput`, a resume) would otherwise keep reporting the
     // state it was in when it last went quiet.
-    if (entry.status !== 'running') {
+    //
+    // Only when it is *newer* than the stop, though. Boundaries get replayed —
+    // a re-read of the same history hands over the same `start` again — and a
+    // replay is older than the stop this client already applied. Without the
+    // comparison, one re-read is enough to leave a finished agent reported as
+    // working for the rest of the session.
+    if (entry.status !== 'running' && message.createdAt > (entry.endedAt ?? 0)) {
         entry.status = 'running';
         entry.endedAt = null;
     }

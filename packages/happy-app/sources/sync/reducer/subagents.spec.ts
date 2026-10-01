@@ -165,6 +165,50 @@ describe('subagent routing', () => {
         });
     });
 
+    it('does not resurrect an agent when its boundary is replayed out of order', () => {
+        // The store does not promise the batch arrives in the order it was
+        // produced — the first page a client loads is assembled from whatever
+        // the server hands back, and a later re-read can hand the same
+        // envelopes over again. A `start` that is *older* than the `stop` this
+        // client already applied is a replay of an agent's birth, not a
+        // resurrection, and treating it as one leaves a finished agent
+        // reported as working forever.
+        const state = createReducer();
+        reducer(state, [
+            lifecycle('s1', 'start', 'sub-1', 200, { title: '/root/x', threadId: 't1' }),
+            lifecycle('s2', 'stop', 'sub-1', 900),
+        ]);
+        expect(reducer(state, []).subagents?.['sub-1']!.status).toBe('completed');
+
+        const replay = reducer(state, [
+            lifecycle('s1', 'start', 'sub-1', 200, { title: '/root/x', threadId: 't1' }),
+        ]);
+        expect(replay.subagents?.['sub-1']).toMatchObject({
+            status: 'completed',
+            endedAt: 900,
+        });
+    });
+
+    it('does revive an agent whose new start is genuinely later', () => {
+        // The other half of the same rule: `sendInput` starts an agent that had
+        // stopped, and that start is newer than the stop it follows. The
+        // comparison is strict — a boundary that claims the same instant as the
+        // stop is a replay of the same transition, not a new one.
+        const state = createReducer();
+        reducer(state, [
+            lifecycle('s1', 'start', 'sub-1', 200, { title: '/root/x', threadId: 't1' }),
+            lifecycle('s2', 'stop', 'sub-1', 900),
+        ]);
+
+        const resumed = reducer(state, [
+            lifecycle('s3', 'start', 'sub-1', 1000, { title: '/root/x', threadId: 't1' }),
+        ]);
+        expect(resumed.subagents?.['sub-1']).toMatchObject({
+            status: 'running',
+            endedAt: null,
+        });
+    });
+
     it('links a grandchild to its parent, not to the session', () => {
         const state = createReducer();
         // The grandchild's activity is reported on the child's thread, which is
