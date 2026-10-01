@@ -132,7 +132,31 @@ export function resolveMessageModeMeta(
     // In either case an omitted fallback could execute differently from the UI.
     if (flavor === 'codex' || flavor === 'agy') {
         const defaults = resolveAgentDefaultConfig(settings?.agentDefaultOverrides, flavor, cliVersion);
-        meta.permissionMode = supported(retirePermissionMode(session.permissionMode ?? defaults.permissionMode));
+
+        // Only a mode the user actually chose is sent. This used to fall back
+        // to the code default, which is harmless-looking and is not: the CLI
+        // treats a permission mode on a message as an instruction to *change*
+        // modes ("Permission mode updated from user message to: …"), and
+        // sending nothing means "keep the current one".
+        //
+        // A session started from the CLI records no permission mode at all —
+        // verified against eighteen live sessions, whose metadata carries
+        // `dangerouslySkipPermissions` and nothing else — so a freshly opened
+        // client has an empty mirror and substituted `auto` for every message.
+        // A session launched with `--permission-mode yolo` was quietly turned
+        // back into one that stops and asks, which is exactly what a user
+        // reported after opening the desktop app.
+        //
+        // The intent behind the old fallback was to keep re-asserting a mode the
+        // user picked, because Codex can reset to its launch mode after an
+        // abort. That still holds: a pick lives in the mirror, and an explicit
+        // per-agent override lives in settings. Both are real intent. A code
+        // default is not.
+        const override = getAgentDefaultOverride(settings?.agentDefaultOverrides, flavor);
+        const chosenMode = session.permissionMode ?? override.permissionMode;
+        if (chosenMode !== undefined && chosenMode !== null) {
+            meta.permissionMode = supported(retirePermissionMode(chosenMode));
+        }
 
         const modelMode = session.modelMode ?? defaults.modelMode;
         meta.model = modelMode === 'default' ? null : modelMode;

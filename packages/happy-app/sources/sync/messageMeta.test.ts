@@ -72,7 +72,20 @@ describe('resolveMessageDeliveryMeta', () => {
 });
 
 describe('resolveMessageModeMeta', () => {
-    it('reasserts the displayed codex defaults after abort clears session overrides', () => {
+    /**
+     * A permission mode on a message is an instruction to change modes: the CLI
+     * resolves `meta.permissionMode` and logs "Permission mode updated from user
+     * message to: …", while an absent one logs "using current". So these cases
+     * send the model and effort — which the composer genuinely controls — and
+     * deliberately say nothing about permissions.
+     *
+     * The distinction is whether the app knows a mode. If the user picked one,
+     * it lives in the mirror or in an explicit setting, and that is intent worth
+     * re-asserting after an abort. A code default is not: sessions started from
+     * the CLI record no permission mode at all, so a freshly opened client has
+     * an empty mirror and would be broadcasting a mode change nobody asked for.
+     */
+    it('reasserts the codex model and effort without inventing a permission mode', () => {
         const meta = resolveMessageModeMeta({
             permissionMode: null,
             modelMode: null,
@@ -81,13 +94,13 @@ describe('resolveMessageModeMeta', () => {
         } as any);
 
         expect(meta).toEqual({
-            permissionMode: 'auto',
             model: 'gpt-5.6-sol',
             effort: 'medium',
         });
+        expect(meta.permissionMode).toBeUndefined();
     });
 
-    it('always sends the displayed Agy model and effort pair', () => {
+    it('always sends the displayed Agy model and effort pair, and no permission mode', () => {
         const meta = resolveMessageModeMeta({
             permissionMode: null,
             modelMode: null,
@@ -96,13 +109,13 @@ describe('resolveMessageModeMeta', () => {
         } as any);
 
         expect(meta).toEqual({
-            permissionMode: 'default',
             model: 'Gemini 3.8 Flash',
             effort: 'medium',
         });
+        expect(meta.permissionMode).toBeUndefined();
     });
 
-    it('uses Default for an unset Codex code default on an old CLI', () => {
+    it('sends no permission mode for an unset Codex session, on an old CLI', () => {
         const meta = resolveMessageModeMeta({
             permissionMode: null,
             modelMode: null,
@@ -110,10 +123,12 @@ describe('resolveMessageModeMeta', () => {
             metadata: { flavor: 'codex', version: '1.2.0' },
         } as any);
 
-        expect(meta.permissionMode).toBe('default');
+        // Nothing is sent, so there is nothing for an old CLI to reject — the
+        // compatibility gate below still covers a mode that *is* sent.
+        expect(meta.permissionMode).toBeUndefined();
     });
 
-    it('uses Auto for an unset Codex code default on a new CLI', () => {
+    it('sends no permission mode for an unset Codex session, on a new CLI', () => {
         const meta = resolveMessageModeMeta({
             permissionMode: null,
             modelMode: null,
@@ -121,7 +136,7 @@ describe('resolveMessageModeMeta', () => {
             metadata: { flavor: 'codex', version: '1.2.1-beta.2' },
         } as any);
 
-        expect(meta.permissionMode).toBe('auto');
+        expect(meta.permissionMode).toBeUndefined();
     });
 
     it('keeps an explicit Codex YOLO override on an old CLI', () => {
@@ -308,10 +323,10 @@ describe('resolveMessageModeMeta', () => {
         } as any);
 
         expect(meta).toEqual({
-            permissionMode: 'auto',
             model: 'my-workspace-model',
             effort: 'medium',
         });
+        expect(meta.permissionMode).toBeUndefined();
     });
 
     it('uses a custom codex model saved in agent settings', () => {
@@ -327,10 +342,10 @@ describe('resolveMessageModeMeta', () => {
         } as any);
 
         expect(meta).toEqual({
-            permissionMode: 'auto',
             model: 'my-workspace-model',
             effort: 'medium',
         });
+        expect(meta.permissionMode).toBeUndefined();
     });
 
     it('fills unset codex fields from settings while preserving session picks', () => {

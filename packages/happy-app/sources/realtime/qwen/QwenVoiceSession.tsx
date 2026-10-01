@@ -375,7 +375,18 @@ class QwenVoiceSessionImpl implements VoiceSession {
             onError: (message) => {
                 if (!isCurrent()) return;
                 console.warn('[Qwen voice]', message);
-                storage.getState().setRealtimeStatus('disconnected');
+                // Deliberately does not touch the connection status.
+                //
+                // The server's `error` events are scoped to one operation, not
+                // to the socket: "Conversation has none active response" is what
+                // a cancel with nothing in flight returns, and the session
+                // carries on afterwards. Reporting it as a disconnect hid the
+                // voice status bar — which renders on `status !== 'disconnected'`
+                // — while the microphone and the socket kept running, so the
+                // only way to stop the call was to know it was still there.
+                //
+                // A connection that really died reports through onClosed, which
+                // is the single place that owns the status transition.
             },
             onUserTranscript: (text) => {
                 if (!isCurrent()) return;
