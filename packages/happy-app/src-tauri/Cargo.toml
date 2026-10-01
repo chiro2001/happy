@@ -21,7 +21,11 @@ tauri-build = { version = "2.4.0", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "~2.9", features = [] }
+tauri = { version = "~2.9", features = ["devtools"] }
+# The log plugin is our only view into a release build: a Windows GUI binary has
+# no console attached, so without a file sink anything the app logs is lost the
+# moment it is written. The JS half of the app forwards its console output here
+# (see utils/consoleLogging.ts) and this writes it to the OS log directory.
 tauri-plugin-log = "2"
 tauri-plugin-http = "2"
 tauri-plugin-opener = "2"

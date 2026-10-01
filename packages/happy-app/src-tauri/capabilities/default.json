@@ -13,6 +13,7 @@
     "http:default",
     "opener:default",
     "websocket:default",
+    "log:default",
     {
       "identifier": "http:default",
       "allow": [
