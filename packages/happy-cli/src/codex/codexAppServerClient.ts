@@ -331,6 +331,15 @@ export class CodexAppServerClient {
         status: string | null,
         error: unknown,
         source: string,
+        /**
+         * Which thread the completion came from, when it is not the session's
+         * own. Codex reports `turn/started` and `turn/completed` for every
+         * thread it runs, subagents included, and the notifications carry no
+         * other hint of their origin. Without this the child's turn ending is
+         * indistinguishable from the parent's, which ends the session's answer
+         * while the parent is still working.
+         */
+        scope: { subagent?: string } = {},
     ): void {
         const aborted = status === 'cancelled' || status === 'canceled' || status === 'aborted' || status === 'interrupted';
 
@@ -350,6 +359,7 @@ export class CodexAppServerClient {
                 ...(turnId ? { turn_id: turnId } : {}),
                 ...(status ? { status } : {}),
                 ...(error !== undefined && error !== null ? { error } : {}),
+                ...scope,
             });
             return;
         }
@@ -359,6 +369,7 @@ export class CodexAppServerClient {
             ...(turnId ? { turn_id: turnId } : {}),
             ...(status ? { status } : {}),
             ...(error !== undefined && error !== null ? { error } : {}),
+            ...scope,
         });
     }
 
@@ -398,6 +409,7 @@ export class CodexAppServerClient {
             this.eventHandler?.({
                 type: 'task_started',
                 ...(turnId ? { turn_id: turnId } : {}),
+                ...this.childThreadScope(params),
             });
             return true;
         }
@@ -408,6 +420,7 @@ export class CodexAppServerClient {
                 this.extractTurnStatus(params),
                 params?.turn?.error ?? params?.error,
                 method,
+                this.childThreadScope(params),
             );
             return true;
         }
@@ -415,7 +428,7 @@ export class CodexAppServerClient {
         if (method === 'thread/status/changed') {
             const statusType = params?.status?.type;
             if (statusType === 'idle' && this.pendingTurnCompletion) {
-                this.emitRawTurnCompletion(this._turnId, 'completed', null, method);
+                this.emitRawTurnCompletion(this._turnId, 'completed', null, method, this.childThreadScope(params));
             }
             return true;
         }
@@ -627,6 +640,7 @@ export class CodexAppServerClient {
                     'completed',
                     null,
                     `${method}:final_answer`,
+                    this.childThreadScope(params),
                 );
             }
             return true;

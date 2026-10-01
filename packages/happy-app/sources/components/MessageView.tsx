@@ -17,7 +17,10 @@ import { Typography } from '@/constants/Typography';
 import { parseLocalCommandMessage, isUserSlashCommandEcho } from './parseLocalCommandMessage';
 import { resolveUserMessageBubbleColor } from '@/utils/userMessageBubbleColor';
 import { LongPressCopyable } from './LongPressCopyable';
+import type { SubagentView } from '@/sync/reducer/reducer';
 
+/** Where a subagent stands, as the registry tracks it. */
+export type SubagentStatus = SubagentView['status'];
 
 export const MessageView = React.memo((props: {
   message: Message;
@@ -31,6 +34,15 @@ export const MessageView = React.memo((props: {
    * tappable and doing nothing.
    */
   onOpenSubagent?: (subagentId: string) => void;
+  /**
+   * Where the agent this row points at stands right now.
+   *
+   * Passed in rather than read from the store per row: the row itself never
+   * changes after it is written, so the only thing that can turn a spawn into a
+   * finished agent is the registry — and a component that subscribed to it
+   * would re-render every message in the conversation on every batch.
+   */
+  subagentStatus?: SubagentStatus;
 }) => {
   return (
     <View
@@ -45,6 +57,7 @@ export const MessageView = React.memo((props: {
           getMessageById={props.getMessageById}
           copyText={props.copyText}
           onOpenSubagent={props.onOpenSubagent}
+          subagentStatus={props.subagentStatus}
         />
       </View>
     </View>
@@ -59,6 +72,7 @@ function RenderBlock(props: {
   getMessageById?: (id: string) => Message | null;
   copyText?: string;
   onOpenSubagent?: (subagentId: string) => void;
+  subagentStatus?: SubagentStatus;
 }): React.ReactElement {
   switch (props.message.kind) {
     case 'user-text':
@@ -88,6 +102,7 @@ function RenderBlock(props: {
       return (
         <SubagentRefBlock
           message={props.message}
+          status={props.subagentStatus}
           onOpen={props.onOpenSubagent}
         />
       );
@@ -398,18 +413,29 @@ function AgentEventBlock(props: {
  */
 function SubagentRefBlock(props: {
   message: SubagentRefMessage;
+  status?: SubagentStatus;
   onOpen?: (subagentId: string) => void;
 }) {
   const path = props.message.title;
   const open = props.onOpen;
+  const status = props.status;
   const content = (
     <>
-      <Ionicons name="git-branch-outline" size={16} color={styles.subagentIconColor.color} />
+      <Ionicons
+        name={status === 'running' || status === undefined ? 'git-branch-outline' : 'git-branch'}
+        size={16}
+        color={styles.subagentIconColor.color}
+      />
       <View style={styles.subagentText}>
         <Text style={styles.subagentTitle} numberOfLines={1}>
           {path ? t('message.subagentTitle', { path }) : t('message.subagentUntitled')}
         </Text>
       </View>
+      {status && (
+        <Text style={status === 'running' ? styles.subagentStatusRunning : styles.subagentStatusSettled}>
+          {subagentStatusLabel(status)}
+        </Text>
+      )}
       {open && (
         <Ionicons name="chevron-forward" size={16} color={styles.subagentChevronColor.color} />
       )}
@@ -428,6 +454,25 @@ function SubagentRefBlock(props: {
       {content}
     </Pressable>
   );
+}
+
+/**
+ * The one word that tells a finished agent from a working one.
+ *
+ * The row is otherwise identical for both — it points at the same place, and
+ * the place does not move — so without this a reader cannot tell whether the
+ * agent it names is still running or has been done for an hour.
+ *
+ * Spelled out rather than looked up by a built key: `t` narrows its return type
+ * from the literal key, and a template string erases that.
+ */
+function subagentStatusLabel(status: SubagentStatus): string {
+  switch (status) {
+    case 'completed': return t('message.subagentStatus.completed');
+    case 'failed': return t('message.subagentStatus.failed');
+    case 'interrupted': return t('message.subagentStatus.interrupted');
+    default: return t('message.subagentStatus.running');
+  }
 }
 
 function ToolCallBlock(props: {
@@ -635,5 +680,19 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 14,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
     color: theme.colors.text,
+  },
+  // Status is the one part of the row that changes while it is on screen, so
+  // it is the one part that is not shaped like the rest: quieter when the
+  // agent is done, and never long enough to push the path out of view.
+  subagentStatusRunning: {
+    fontSize: 12,
+    ...Typography.default(),
+    color: theme.colors.textSecondary,
+  },
+  subagentStatusSettled: {
+    fontSize: 12,
+    ...Typography.default(),
+    color: theme.colors.textSecondary,
+    opacity: 0.7,
   },
 }));

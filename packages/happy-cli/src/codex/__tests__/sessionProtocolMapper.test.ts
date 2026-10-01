@@ -418,32 +418,126 @@ describe('mapCodexMcpMessageToSessionEnvelopes', () => {
         );
 
         expect(interrupted.envelopes).toHaveLength(2);
-        expect(interrupted.envelopes[0]).toMatchObject({
+        // The boundary travels as a `stop`: an agent's own end-of-life report
+        // is the only thing that should close it, and before this it fell
+        // through to the start path — which is how an agent's *finish* came to
+        // be drawn in the conversation as a second "spawned" line.
+        const stop = interrupted.envelopes.find((envelope) => envelope.ev.t === 'stop');
+        expect(stop).toMatchObject({ subagent: started.envelopes[0].subagent });
+        expect(interrupted.envelopes).toContainEqual(expect.objectContaining({
             subagent: started.envelopes[0].subagent,
             ev: { t: 'service', text: 'Codex subagent interrupted' },
-        });
-        expect(interrupted.envelopes[1].ev).toEqual({ t: 'stop' });
-        expect(interrupted.envelopes[1].subagent).toBe(started.envelopes[0].subagent);
+        }));
+        expect(interrupted.activeSubagents.has(started.envelopes[0].subagent!)).toBe(false);
     });
 
-    it('emits stop for active subagents before turn-end', () => {
+    it('announces an agent once and keeps its activity from re-announcing it', () => {
+        const started = mapCodexMcpMessageToSessionEnvelopes(
+            {
+                type: 'subagent_activity',
+                kind: 'started',
+                agent_thread_id: 'provider-child-thread',
+                agent_path: 'Auth explorer',
+            },
+            { currentTurnId: 'turn-1' }
+        );
+        const again = mapCodexMcpMessageToSessionEnvelopes(
+            {
+                type: 'subagent_activity',
+                kind: 'started',
+                agent_thread_id: 'provider-child-thread',
+                agent_path: 'Auth explorer',
+            },
+            {
+                currentTurnId: 'turn-1',
+                startedSubagents: started.startedSubagents,
+                activeSubagents: started.activeSubagents,
+                providerSubagentToSessionSubagent: started.providerSubagentToSessionSubagent,
+                subagentTitles: started.subagentTitles,
+            }
+        );
+
+        // Every command the agent runs re-reports it as active; only the first
+        // is news.
+        expect(again.envelopes.filter((envelope) => envelope.ev.t === 'start')).toHaveLength(0);
+    });
+
+    it('draws a parent\'s sendInput to a child as the tool card nothing else reports', () => {
+        const started = mapCodexMcpMessageToSessionEnvelopes(
+            {
+                type: 'subagent_activity',
+                kind: 'started',
+                agent_thread_id: 'provider-child-thread',
+                agent_path: 'Auth explorer',
+            },
+            { currentTurnId: 'turn-1' }
+        );
+        const interacted = mapCodexMcpMessageToSessionEnvelopes(
+            {
+                type: 'subagent_activity',
+                kind: 'interacted',
+                item_id: 'activity-7',
+                agent_thread_id: 'provider-child-thread',
+                agent_path: 'Auth explorer',
+            },
+            {
+                currentTurnId: 'turn-1',
+                startedSubagents: started.startedSubagents,
+                activeSubagents: started.activeSubagents,
+                providerSubagentToSessionSubagent: started.providerSubagentToSessionSubagent,
+                subagentTitles: started.subagentTitles,
+            }
+        );
+
+        // Unlike `wait`, the app-server never turns `sendInput` into a
+        // `collabAgentToolCall` item, so the card is synthesized from the
+        // activity marker — on the main timeline, because it is the parent's
+        // action, not the child's output.
+        const toolStart = interacted.envelopes.find((envelope) => envelope.ev.t === 'tool-call-start');
+        expect(toolStart!.subagent).toBeUndefined();
+        expect(toolStart).toMatchObject({
+            ev: {
+                t: 'tool-call-start',
+                name: 'CodexSubagent',
+                title: 'Send input to Codex subagent',
+            },
+        });
+        const call = (toolStart!.ev as { call: string }).call;
+        expect(interacted.envelopes).toContainEqual(expect.objectContaining({
+            ev: { t: 'tool-call-end', call },
+        }));
+    });
+
+    it('closes active subagents when the turn is aborted, not when it completes', () => {
         const subagent = createId();
         const activeSubagents = new Set<string>([subagent]);
         const startedSubagents = new Set<string>([subagent]);
-        const result = mapCodexMcpMessageToSessionEnvelopes(
+        const state = { currentTurnId: 'turn-1', activeSubagents, startedSubagents };
+
+        // A turn ending normally leaves the agents it spawned alone: they run
+        // on their own threads and report their own finish, and stopping them
+        // here would both mislabel a working agent and make its next report
+        // look like a fresh spawn.
+        const completed = mapCodexMcpMessageToSessionEnvelopes(
             { type: 'task_complete' },
-            { currentTurnId: 'turn-1', activeSubagents, startedSubagents }
+            state
         );
 
-        expect(result.envelopes).toHaveLength(2);
-        expect(result.envelopes[0]).toMatchObject({
-            subagent,
-            ev: { t: 'stop' },
-        });
-        expect(result.envelopes[1].ev).toEqual({
+        expect(completed.envelopes).toHaveLength(1);
+        expect(completed.envelopes[0].ev).toEqual({
             t: 'turn-end',
             status: 'completed',
         });
+        expect(completed.activeSubagents.has(subagent)).toBe(true);
+
+        // An abort does kill them, so it does close them.
+        const aborted = mapCodexMcpMessageToSessionEnvelopes(
+            { type: 'turn_aborted' },
+            { currentTurnId: 'turn-1', activeSubagents: completed.activeSubagents, startedSubagents }
+        );
+
+        expect(aborted.envelopes[0]).toMatchObject({ subagent, ev: { t: 'stop' } });
+        expect(aborted.envelopes[1].ev).toEqual({ t: 'turn-end', status: 'cancelled' });
     });
 
     it('maps exec command begin to tool-call-start', () => {

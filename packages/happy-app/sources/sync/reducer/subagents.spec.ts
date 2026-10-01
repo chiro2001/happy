@@ -141,6 +141,30 @@ describe('subagent routing', () => {
         });
     });
 
+    it('announces an agent once, however many boundaries it reports', () => {
+        // An agent's boundary is re-reported whenever it is resumed, and a
+        // session that is reloaded rebuilds every turn's boundaries from
+        // scratch. Each of those is a `start`, and none of them is a second
+        // agent — so the conversation keeps one row and the row's *state*
+        // (read from the registry) is what changes.
+        const state = createReducer();
+        const first = reducer(state, [
+            lifecycle('s1', 'start', 'sub-1', 200, { title: '/root/x', threadId: 't1' }),
+            lifecycle('s2', 'stop', 'sub-1', 300),
+        ]);
+        expect(first.messages.filter((m) => m.kind === 'subagent-ref')).toHaveLength(1);
+        expect(first.subagents?.['sub-1']!.status).toBe('completed');
+
+        const second = reducer(state, [
+            lifecycle('s3', 'start', 'sub-1', 400, { title: '/root/x', threadId: 't1' }),
+        ]);
+        expect(second.messages.filter((m) => m.kind === 'subagent-ref')).toHaveLength(0);
+        expect(second.subagents?.['sub-1']).toMatchObject({
+            status: 'running',
+            endedAt: null,
+        });
+    });
+
     it('links a grandchild to its parent, not to the session', () => {
         const state = createReducer();
         // The grandchild's activity is reported on the child's thread, which is
@@ -185,5 +209,50 @@ describe('subagent routing', () => {
 
         // No pointer row either: there is nothing to point at.
         expect(result.messages).toHaveLength(0);
+    });
+
+    it('keeps a command out of the timeline when its result arrives in a later pass', () => {
+        // The shape a real command has: the start and the result are separate
+        // envelopes, reduced in separate passes. The row is created by the
+        // first and *updated* by the second, so anything that remembers which
+        // agent the row belongs to by looking only at the current pass forgets
+        // it exactly when the command finishes — and the agent's work reappears
+        // inline, attributed to the parent.
+        const state = createReducer();
+
+        const startEnvelope = command('c1', 300, 'sub-1');
+        const fileResult = reducer(state, [
+            lifecycle('s1', 'start', 'sub-1', 200, { title: '/root/researcher' }),
+            startEnvelope,
+        ]);
+        expect(fileResult.messages.map((m) => m.kind)).toEqual(['subagent-ref']);
+
+        const endEnvelope: NormalizedMessage = {
+            id: 'c1-result',
+            localId: null,
+            createdAt: 400,
+            role: 'agent',
+            isSidechain: false,
+            subagentId: 'sub-1',
+            content: [{
+                type: 'tool-result',
+                tool_use_id: 'c1-call',
+                content: 'hi',
+                is_error: false,
+                uuid: 'c1-result-uuid',
+                parentUUID: null,
+            }],
+        };
+        const afterResult = reducer(state, [endEnvelope]);
+
+        // The timeline has nothing new in it, and the agent's page has both
+        // rows — the command and its result, joined.
+        expect(afterResult.messages).toHaveLength(0);
+        const agent = afterResult.subagents?.['sub-1'];
+        expect(agent!.messages).toHaveLength(1);
+        expect(agent!.messages[0].kind).toBe('tool-call');
+        expect((agent!.messages[0] as { tool: { result?: unknown } }).tool).toMatchObject({
+            state: 'completed',
+        });
     });
 });

@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
     appState: 'active' as 'active' | 'inactive' | 'background',
     appStateListeners: [] as Array<(next: 'active' | 'inactive' | 'background') => void>,
     messages: [] as any[],
+    subagents: {} as Record<string, any>,
     hasMoreOlder: false,
     isLoadingOlder: false,
     session: null as any,
@@ -96,6 +97,7 @@ vi.mock('@expo/vector-icons', async () => {
 vi.mock('@/sync/storage', () => ({
     useSession: () => state.session,
     useSessionMessages: () => ({ messages: state.messages, hasMoreOlder: state.hasMoreOlder, isLoadingOlder: state.isLoadingOlder }),
+    useSessionSubagents: () => state.subagents,
     useSetting: () => true,
 }));
 vi.mock('@/sync/storageTypes', () => ({}));

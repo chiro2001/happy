@@ -112,7 +112,14 @@ function maybeEmitSubagentStart(
      */
     origin?: { threadId?: string; parentThreadId?: string },
 ): void {
-    if (!subagent || startedSubagents.has(subagent)) {
+    if (!subagent) {
+        return;
+    }
+
+    // An agent that is already running has nothing new to announce — activity
+    // repeats for every command it runs. Only a genuine transition (first
+    // sighting, or a resumed agent that had stopped) produces a boundary.
+    if (activeSubagents.has(subagent)) {
         return;
     }
 
@@ -151,7 +158,6 @@ function emitSubagentStops(
         envelopes.push(createEnvelope('agent', { t: 'stop' }, { ...opts, subagent }));
     }
     activeSubagents.clear();
-    startedSubagents.clear();
     return envelopes;
 }
 
@@ -558,6 +564,114 @@ function collabArgs(
     };
 }
 
+/**
+ * One collab interaction, as the timeline's tool card.
+ *
+ * Shared by the `collabAgentToolCall` items Codex does emit and the ones it
+ * does not: `sendInput` reaches the client as a bare activity marker, so the
+ * card is built here from the same fields the real item carries, and the two
+ * spellings of the same interaction render identically.
+ */
+function emitCollabToolCallEnvelopes(
+    envelopes: SessionEnvelope[],
+    details: {
+        tool: string;
+        status: string;
+        sessionSubagent: string;
+        prompt?: string | null;
+    },
+    callId: string,
+    opts: CreateEnvelopeOptions,
+    times: { startedAt: number; completedAt?: number },
+): void {
+    const prompt = details.prompt ?? undefined;
+    const title = collabToolTitle(details.tool, prompt);
+    envelopes.push(createEnvelope('agent', {
+        t: 'tool-call-start',
+        call: callId,
+        name: 'CodexSubagent',
+        title,
+        description: collabToolDescription(details.tool, prompt),
+        args: {
+            tool: details.tool,
+            status: details.status,
+            prompt: details.prompt ?? null,
+            agentStates: {},
+            sessionSubagent: details.sessionSubagent,
+            sessionSubagents: [details.sessionSubagent],
+        },
+    }, {
+        ...opts,
+        id: `${callId}:start`,
+        time: times.startedAt,
+    }));
+    envelopes.push(createEnvelope('agent', { t: 'tool-call-end', call: callId }, {
+        ...opts,
+        id: `${callId}:end`,
+        time: times.completedAt ?? times.startedAt,
+    }));
+}
+
+/**
+ * A subagent activity item, turned into what the conversation shows.
+ *
+ * Shared by the live stream and the backfill read because the two see the same
+ * items and must agree about them — the earlier split is how they came to
+ * disagree, with a live client rendering an agent's finish as a second spawn.
+ *
+ * The three kinds mean three different things:
+ *
+ * - `started`   the agent exists and is running → announce it
+ * - `interacted` the parent sent it input → running again, and that interaction
+ *                is itself worth a row, which nothing else produces
+ * - `completed`/`interrupted`/`failed` → it stopped
+ */
+function subagentActivityEnvelopes(
+    envelopes: SessionEnvelope[],
+    details: {
+        kind: string | undefined;
+        sessionSubagent: string;
+        agentPath: string | undefined;
+        origin: { threadId?: string; parentThreadId?: string };
+        opts: CreateEnvelopeOptions;
+        startedAt: number;
+        itemId: string | undefined;
+    },
+    startedSubagents: Set<string>,
+    activeSubagents: Set<string>,
+    subagentTitles: Map<string, string>,
+): void {
+    const { kind, sessionSubagent, agentPath, origin, opts, startedAt, itemId } = details;
+    if (kind === 'completed' || kind === 'interrupted' || kind === 'failed') {
+        maybeEmitSubagentStop(sessionSubagent, opts, activeSubagents, envelopes);
+    } else {
+        maybeEmitSubagentStart(
+            sessionSubagent,
+            opts,
+            startedSubagents,
+            activeSubagents,
+            subagentTitles,
+            envelopes,
+            origin,
+        );
+    }
+    maybeEmitSubagentActivityService(envelopes, kind, agentPath, opts, sessionSubagent);
+    if (kind === 'interacted') {
+        // The app-server reports a parent's `sendInput` to a child as nothing
+        // but this marker — unlike `wait` and `spawnAgent` it never becomes a
+        // `collabAgentToolCall` item — so without synthesizing the card here
+        // the interaction exists in the protocol and nowhere on screen.
+        const callId = `subagent-interacted:${itemId ?? sessionSubagent}`;
+        emitCollabToolCallEnvelopes(
+            envelopes,
+            { tool: 'sendInput', status: 'completed', sessionSubagent },
+            callId,
+            opts,
+            { startedAt },
+        );
+    }
+}
+
 function summarizeCommand(command: unknown): string | null {
     if (typeof command === 'string' && command.trim().length > 0) {
         return command;
@@ -901,19 +1015,21 @@ export function mapCodexThreadItemToSessionEnvelopes(
                 codexItemId: item.id,
             } satisfies CreateEnvelopeOptions;
             const envelopes: SessionEnvelope[] = [];
-            maybeEmitSubagentStart(
-                sessionSubagent,
-                opts,
+            subagentActivityEnvelopes(
+                envelopes,
+                {
+                    kind: pickString(itemRecord.kind),
+                    sessionSubagent,
+                    agentPath,
+                    origin,
+                    opts,
+                    startedAt,
+                    itemId: typeof item.id === 'string' ? item.id : undefined,
+                },
                 startedSubagents,
                 activeSubagents,
                 subagentTitles,
-                envelopes,
-                origin,
             );
-            maybeEmitSubagentActivityService(envelopes, itemRecord.kind, agentPath, opts, sessionSubagent);
-            if (itemRecord.kind === 'interrupted') {
-                maybeEmitSubagentStop(sessionSubagent, opts, activeSubagents, envelopes);
-            }
             return envelopes;
         }
         default:
@@ -1040,6 +1156,47 @@ function mapCodexMcpMessageToSessionEnvelopesInner(message: Record<string, unkno
     const collabReceiverThreadIdsByCall = getCollabReceiverThreadIdsByCall(state);
     const collabToolByCall = getCollabToolByCall(state);
 
+    // `turn/started` and `turn/completed` are reported for every thread Codex
+    // runs, including the ones subagents run on. A child's turn boundary is not
+    // the session's: treating it as one ends the parent's answer while it is
+    // still working, and the registry it clears makes the child's next activity
+    // re-announce an agent that was already introduced — which the timeline
+    // shows as a second, identical "spawned" row where the agent's *finish*
+    // should have been.
+    const childThreadId = pickString(message.subagent);
+    if (childThreadId && (type === 'task_started' || type === 'task_complete' || type === 'turn_aborted')) {
+        const sessionSubagent = ensureSessionSubagent(childThreadId, providerSubagentToSessionSubagent);
+        const opts = {
+            ...(state.currentTurnId ? { turn: state.currentTurnId } : {}),
+            subagent: sessionSubagent,
+        } satisfies CreateEnvelopeOptions;
+        const envelopes: SessionEnvelope[] = [];
+        if (type === 'task_started') {
+            maybeEmitSubagentStart(
+                sessionSubagent,
+                opts,
+                startedSubagents,
+                activeSubagents,
+                subagentTitles,
+                envelopes,
+                { threadId: childThreadId },
+            );
+        }
+        if (type === 'task_complete' || type === 'turn_aborted') {
+            maybeEmitSubagentStop(sessionSubagent, opts, activeSubagents, envelopes);
+        }
+        return {
+            currentTurnId: state.currentTurnId,
+            startedSubagents,
+            activeSubagents,
+            providerSubagentToSessionSubagent,
+            subagentTitles,
+            collabReceiverThreadIdsByCall,
+            collabToolByCall,
+            envelopes,
+        };
+    }
+
     if (type === 'task_started') {
         const turnId = createId();
         const turnStart = createEnvelope('agent', { t: 'turn-start' }, { turn: turnId });
@@ -1085,7 +1242,13 @@ function mapCodexMcpMessageToSessionEnvelopesInner(message: Record<string, unkno
             collabReceiverThreadIdsByCall,
             collabToolByCall,
             envelopes: [
-                ...emitSubagentStops(lifecycleOpts, startedSubagents, activeSubagents),
+                // A turn ending normally does not end the agents it spawned:
+                // they run on their own threads and report their own finish.
+                // An abort does — the children are killed with the turn — which
+                // is why only that path closes them here.
+                ...(type === 'turn_aborted'
+                    ? emitSubagentStops(lifecycleOpts, startedSubagents, activeSubagents)
+                    : []),
                 createEnvelope('agent', {
                     t: 'turn-end',
                     status: pickTurnEndStatus(message, type),
@@ -1204,19 +1367,21 @@ function mapCodexMcpMessageToSessionEnvelopesInner(message: Record<string, unkno
         };
         const turnOpts = buildEnvelopeOptions(state.currentTurnId);
         const envelopes: SessionEnvelope[] = [];
-        maybeEmitSubagentStart(
-            sessionSubagent,
-            turnOpts,
+        subagentActivityEnvelopes(
+            envelopes,
+            {
+                kind: pickString(message.kind),
+                sessionSubagent,
+                agentPath,
+                origin,
+                opts: turnOpts,
+                startedAt: typeof message.time === 'number' ? message.time : Date.now(),
+                itemId: pickString(message.item_id ?? message.itemId),
+            },
             startedSubagents,
             activeSubagents,
             subagentTitles,
-            envelopes,
-            origin,
         );
-        maybeEmitSubagentActivityService(envelopes, message.kind, agentPath, turnOpts, sessionSubagent);
-        if (message.kind === 'interrupted') {
-            maybeEmitSubagentStop(sessionSubagent, turnOpts, activeSubagents, envelopes);
-        }
 
         return {
             currentTurnId: state.currentTurnId,

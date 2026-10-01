@@ -62,7 +62,11 @@ function refMessage(overrides: Partial<SubagentRefMessage> = {}): SubagentRefMes
     };
 }
 
-function render(message: SubagentRefMessage, onOpenSubagent?: (id: string) => void) {
+function render(
+    message: SubagentRefMessage,
+    onOpenSubagent?: (id: string) => void,
+    subagentStatus?: 'running' | 'completed' | 'failed' | 'interrupted',
+) {
     // `act` is required, not stylistic: without it React 19 unmounts the
     // renderer before the assertions run, which reads as "rendered nothing".
     let tree!: ReturnType<typeof create>;
@@ -73,6 +77,7 @@ function render(message: SubagentRefMessage, onOpenSubagent?: (id: string) => vo
                 metadata: null,
                 sessionId: 's1',
                 onOpenSubagent,
+                subagentStatus,
             }),
         );
     });
@@ -105,5 +110,17 @@ describe('subagent pointer row', () => {
         // unnamed; showing the row without a name beats hiding work in progress.
         const tree = render(refMessage({ title: null }));
         expect(JSON.stringify(tree.toJSON())).toContain('message.subagentUntitled');
+    });
+
+    it('says whether the agent is still working, in the row itself', () => {
+        // The row is written once and never rewritten — the agent it points at
+        // is what changes — so a reader with the conversation open needs the
+        // state on the row, not only on the agent's own page.
+        const running = JSON.stringify(render(refMessage(), undefined, 'running').toJSON());
+        expect(running).toContain('message.subagentStatus.running');
+
+        const done = JSON.stringify(render(refMessage(), undefined, 'completed').toJSON());
+        expect(done).toContain('message.subagentStatus.completed');
+        expect(done).not.toContain('message.subagentStatus.running');
     });
 });

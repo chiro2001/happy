@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useSession, useSessionMessages, useSetting } from "@/sync/storage";
+import { useSession, useSessionMessages, useSessionSubagents, useSetting } from "@/sync/storage";
 import { sync } from '@/sync/sync';
 import { ActivityIndicator, AppState, NativeScrollEvent, NativeSyntheticEvent, Platform, Pressable, View } from 'react-native';
 import { useCallback } from 'react';
@@ -11,6 +11,7 @@ import { AgentWorkGroupHeader } from './AgentWorkGroupHeader';
 import { Metadata, Session } from '@/sync/storageTypes';
 import { ChatFooter } from './ChatFooter';
 import { Message } from '@/sync/typesMessage';
+import type { SubagentView } from '@/sync/reducer/reducer';
 import { AgentWorkGroupItem, DisplayItem, TextItem, useGroupedMessages } from '@/hooks/useGroupedMessages';
 import { Octicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -184,12 +185,17 @@ export const ChatList = React.memo((props: {
     onOpenSubagent?: (subagentId: string) => void;
 }) => {
     const { messages, hasMoreOlder, isLoadingOlder } = useSessionMessages(props.session.id);
+    // Subscribed here rather than inside `MessageView`: a row that read the
+    // registry itself would make every message in the conversation re-render
+    // whenever any agent moved, and only the pointer rows care.
+    const subagents = useSessionSubagents(props.session.id);
     return (
         <ChatListInternal
             metadata={props.session.metadata}
             sessionId={props.session.id}
             active={props.active ?? true}
             messages={messages}
+            subagents={subagents}
             hasMoreOlder={hasMoreOlder}
             isLoadingOlder={isLoadingOlder}
             onOpenSubagent={props.onOpenSubagent}
@@ -250,6 +256,7 @@ const ChatListInternal = React.memo((props: {
     messages: Message[],
     hasMoreOlder: boolean,
     isLoadingOlder: boolean,
+    subagents: Record<string, SubagentView>,
     topContentInset?: number,
     bottomContentInset?: number,
     scrollButtonInset?: number,
@@ -614,10 +621,13 @@ const ChatListInternal = React.memo((props: {
                     sessionId={props.sessionId}
                     copyText={agentCopyTextByMessageId.get(item.message.id)}
                     onOpenSubagent={props.onOpenSubagent}
+                    subagentStatus={item.message.kind === 'subagent-ref'
+                        ? props.subagents[item.message.subagentId]?.status
+                        : undefined}
                 />
             </DiffSyntaxCell>
         );
-    }, [agentCopyTextByMessageId, props.metadata, props.sessionId, props.onOpenSubagent, syntaxViewport, isGroupExpanded, handleToggleGroup]);
+    }, [agentCopyTextByMessageId, props.metadata, props.sessionId, props.onOpenSubagent, props.subagents, syntaxViewport, isGroupExpanded, handleToggleGroup]);
 
     // The list is inverted, so offset 0 is the newest message and growing
     // offsets walk back through history.

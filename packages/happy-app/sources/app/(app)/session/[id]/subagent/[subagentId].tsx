@@ -69,6 +69,11 @@ export default React.memo(() => {
     const styles = stylesheet;
 
     const subagent = subagentId ? subagents[subagentId] : undefined;
+    const scrollRef = React.useRef<ScrollView>(null);
+    // The reason to open an agent's page is to see where it got to, so it
+    // opens at the end. Only the first layout scrolls: a second pass would drag
+    // a reader who has scrolled up back down every time the agent emits a line.
+    const pinnedToEnd = React.useRef(false);
 
     // A subagent only exists as long as the messages that reference it, so a
     // stale link — a bookmark, a back-navigation after the session was
@@ -102,7 +107,16 @@ export default React.memo(() => {
     return (
         <>
             <Stack.Screen options={{ headerTitle }} />
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+            <ScrollView
+                ref={scrollRef}
+                style={styles.scroll}
+                contentContainerStyle={styles.scrollContent}
+                onContentSizeChange={() => {
+                    if (pinnedToEnd.current) return;
+                    pinnedToEnd.current = true;
+                    scrollRef.current?.scrollToEnd({ animated: false });
+                }}
+            >
                 <View style={styles.header}>
                     {subagent.title && <Text style={styles.title}>{subagent.title}</Text>}
                     <Text style={styles.meta}>{describeStatus(subagent)}</Text>

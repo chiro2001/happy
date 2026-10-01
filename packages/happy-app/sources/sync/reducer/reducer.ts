@@ -229,6 +229,17 @@ export type ReducerState = {
      * to remember the thread id and title in between.
      */
     subagents: Map<string, ReducerSubagent>;
+    /**
+     * Envelope id → the subagent that envelope belongs to, for the life of the
+     * session.
+     *
+     * Deliberately not rebuilt per pass. A row's `realID` usually points at an
+     * envelope from an *earlier* pass — a command's start, whose result only
+     * arrives later — so a pass-local map loses ownership exactly when the row
+     * is next updated, and the agent's finished work reappears in the main
+     * timeline as if the parent had run it.
+     */
+    subagentBySourceId: Map<string, string>;
     latestTodos?: {
         todos: TodoItem[];
         timestamp: number;
@@ -254,6 +265,7 @@ export function createReducer(): ReducerState {
         messageIds: new Map(),
         sidechains: new Map(),
         subagents: new Map(),
+        subagentBySourceId: new Map(),
         pendingReceipts: new Map(),
         unmatchedAckServerIds: new Map(),
         tracerState: createTracer()
@@ -481,10 +493,18 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
         if (first?.type !== 'subagent-lifecycle') continue;
 
         state.messageIds.set(msg.id, msg.id);
+        // Whether this agent already has a pointer in the conversation. Read
+        // before the lifecycle is applied, because applying it is what creates
+        // the registry entry. A subagent is a place: however many times its
+        // boundary is re-reported — a resume, a turn that spans several
+        // `start` envelopes, a reload — it gets exactly one row pointing at it,
+        // and that row reports its current state rather than being duplicated
+        // per transition.
+        const alreadyPointedAt = state.subagents.has(first.subagentId);
         applySubagentLifecycle(state, first, msg);
         changed.add(msg.id);
 
-        if (first.kind === 'start') {
+        if (first.kind === 'start' && !alreadyPointedAt) {
             subagentRefs.push({
                 id: msg.id,
                 createdAt: msg.createdAt,
@@ -498,11 +518,13 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
     }
 
     // Which rows belong to a subagent, keyed by the id they were received
-    // under. Built once here rather than stamped onto each row as it is
+    // under. Recorded in the state rather than stamped onto each row as it is
     // created: rows are built in eight different places in this function, and
     // a field that has to be set in eight places is a field that will be
     // forgotten in the ninth — leaving that agent's work inline, silently.
-    const subagentBySourceId = new Map<string, string>();
+    // The map outlives the pass for the same reason: a row updated later still
+    // carries the id of the envelope that created it.
+    const subagentBySourceId = state.subagentBySourceId;
     for (const msg of tracedMessages) {
         if (msg.subagentId) subagentBySourceId.set(msg.id, msg.subagentId);
     }
@@ -1556,6 +1578,13 @@ function applySubagentLifecycle(
     // A `start` may arrive more than once for the same agent — the parent turn
     // can end before a child finishes, and the next turn re-emits it. Filling
     // gaps rather than overwriting keeps the useful values from the first one.
+    // A `start` also means the agent is running: an agent that had stopped and
+    // came back (a `sendInput`, a resume) would otherwise keep reporting the
+    // state it was in when it last went quiet.
+    if (entry.status !== 'running') {
+        entry.status = 'running';
+        entry.endedAt = null;
+    }
     if (lifecycle.title) entry.title = lifecycle.title;
     if (lifecycle.threadId) entry.threadId = lifecycle.threadId;
     if (lifecycle.parentThreadId) entry.parentThreadId = lifecycle.parentThreadId;
