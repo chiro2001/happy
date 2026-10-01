@@ -948,6 +948,15 @@ export const zhHant: TranslationStructure = {
         sending: 'Sending…',
         sendFailed: ({ reason }: { reason: string }) => `未傳送：${reason}`,
         unknownTime: '未知時間',
+        subagentTitle: ({ path }: { path: string }) => `子代理 ${path}`,
+        subagentUntitled: '子代理',
+        subagentEmpty: '這個子代理還沒有產生輸出。',
+        subagentStatus: {
+            running: '進行中…',
+            completed: '已完成',
+            failed: '失敗',
+            interrupted: '已中斷',
+        },
     },
 
     codex: {

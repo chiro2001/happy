@@ -78,6 +78,26 @@ export type ModeSwitchMessage = {
     meta?: MessageMeta;
 }
 
+/**
+ * The conversation's one-line pointer to a subagent.
+ *
+ * Stands where the agent's work would otherwise have spilled into the timeline:
+ * the spawn card stays, then this row, then the main agent carries on. Tapping
+ * it opens the agent's own page, which is the only place its transcript is
+ * shown.
+ */
+export type SubagentRefMessage = {
+    kind: 'subagent-ref';
+    id: string;
+    createdAt: number;
+    turn?: string;
+    /** Session-protocol id; the key into the session's subagent registry. */
+    subagentId: string;
+    /** The agent path (`/root/x/y`), which is itself the hierarchy. */
+    title: string | null;
+    meta?: MessageMeta;
+}
+
 export type AgentTextMessage = {
     kind: 'agent-text';
     id: string;
@@ -105,7 +125,7 @@ export function isOtherParticipantMessage(message: Pick<UserTextMessage, 'author
     return message.author !== undefined && message.author.owner !== true;
 }
 
-export type Message = UserTextMessage | AgentTextMessage | ToolCallMessage | ModeSwitchMessage;
+export type Message = UserTextMessage | AgentTextMessage | ToolCallMessage | ModeSwitchMessage | SubagentRefMessage;
 
 /**
  * Added to a pending message's own timestamp to park it past every real one,

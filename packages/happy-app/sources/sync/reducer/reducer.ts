@@ -111,7 +111,7 @@
  */
 
 import { Message, PENDING_SORT_OFFSET, ToolCall } from "../typesMessage";
-import { AgentEvent, NormalizedMessage, SessionAuthor, UsageData } from "../typesRaw";
+import { AgentEvent, NormalizedAgentContent, NormalizedMessage, SessionAuthor, UsageData } from "../typesRaw";
 import { createTracer, traceMessages, TracerState } from "./reducerTracer";
 import { AgentState, TodoItem, TodoItemsSchema } from "../storageTypes";
 import { MessageMeta } from "../typesMessageMeta";
@@ -136,6 +136,49 @@ type ReducerMessage = {
     turn?: string;
     author?: SessionAuthor;
 }
+
+/**
+ * One subagent, as far as this client can see it.
+ *
+ * Kept as its own record rather than folded into the message list because a
+ * subagent is a *place* you can look at, not a row: it has a title, a parent, a
+ * lifetime, and its own transcript. The timeline shows a single line pointing
+ * here.
+ */
+export type ReducerSubagent = {
+    /** Session-protocol id (a cuid), stable across restarts. */
+    id: string;
+    /**
+     * The agent's own thread id — what `thread/read` and `thread/fork` need.
+     * Null until a `start` carrying it arrives; the id above cannot be turned
+     * back into this one.
+     */
+    threadId: string | null;
+    /**
+     * The thread of the agent that spawned this one, or null when the session's
+     * main agent did. Resolved to a `parentId` below.
+     */
+    parentThreadId: string | null;
+    /** The parent's `id`, or null for a top-level subagent. */
+    parentId: string | null;
+    /** Usually the agent path (`/root/x/y`), which is itself the hierarchy. */
+    title: string | null;
+    status: 'running' | 'completed' | 'failed' | 'interrupted';
+    startedAt: number;
+    endedAt: number | null;
+    /**
+     * Ids of this agent's rows in `state.messages`, in arrival order. Ids
+     * rather than the rows themselves so a row updated later — a tool call
+     * receiving its result, say — is seen in its final shape when the page is
+     * serialized, instead of the snapshot taken when it was filed.
+     */
+    messageIds: string[];
+};
+
+/** A subagent as the UI receives it: the registry entry plus its transcript. */
+export type SubagentView = Omit<ReducerSubagent, 'messageIds'> & {
+    messages: Message[];
+};
 
 type StoredPermission = {
     // Canonical request id (the key in agentState.requests) — the id the CLI
@@ -177,6 +220,15 @@ export type ReducerState = {
     unmatchedAckServerIds: Map<string, string>; // local id -> server message id
     sidechains: Map<string, ReducerMessage[]>;
     tracerState: TracerState; // Tracer state for sidechain processing
+    /**
+     * Subagents seen in this session, keyed by their session-protocol id.
+     *
+     * A map on the state rather than a field on each message because a
+     * subagent outlives any single message: its `start` may arrive in one
+     * reducer pass and its transcript several passes later, and the client has
+     * to remember the thread id and title in between.
+     */
+    subagents: Map<string, ReducerSubagent>;
     latestTodos?: {
         todos: TodoItem[];
         timestamp: number;
@@ -201,6 +253,7 @@ export function createReducer(): ReducerState {
         localIds: new Map(),
         messageIds: new Map(),
         sidechains: new Map(),
+        subagents: new Map(),
         pendingReceipts: new Map(),
         unmatchedAckServerIds: new Map(),
         tracerState: createTracer()
@@ -272,6 +325,14 @@ function isDuplicateSidechainPrompt(
 
 export type ReducerResult = {
     messages: Message[];
+    /**
+     * Subagents seen in this session, by id, each with its own transcript.
+     *
+     * Separate from `messages` because these are places, not rows: the timeline
+     * holds a single `subagent-ref` pointing at each one, and the agent's actual
+     * work lives here so opening it does not have to filter the conversation.
+     */
+    subagents?: Record<string, SubagentView>;
     todos?: TodoItem[];
     usage?: {
         inputTokens: number;
@@ -397,6 +458,54 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
     // Separate sidechain and non-sidechain messages
     let nonSidechainMessages = tracedMessages.filter(msg => !msg.sidechainId);
     const sidechainMessages = tracedMessages.filter(msg => msg.sidechainId);
+
+    //
+    // Phase 0.4: Subagent registry
+    //
+    // A subagent's rows stay in `state.messages` and go through the ordinary
+    // pipeline — that is deliberate, because tool calls and their results are
+    // joined by machinery that already works and duplicating it here would be
+    // the fastest way to break both. They are sorted out at the very end, when
+    // the rows become output: a row carrying `subagentId` goes to its agent's
+    // transcript instead of the timeline.
+    //
+    // Lifecycle markers are the exception, because they *are* the timeline's
+    // rows. They never enter `state.messages`; they update the registry and
+    // emit the one-line pointer the conversation shows in the agent's place.
+    //
+    const subagentRefs: Message[] = [];
+    for (const msg of tracedMessages) {
+        if (!msg.subagentId || state.messageIds.has(msg.id)) continue;
+        if (msg.role !== 'agent') continue;
+        const first = msg.content[0];
+        if (first?.type !== 'subagent-lifecycle') continue;
+
+        state.messageIds.set(msg.id, msg.id);
+        applySubagentLifecycle(state, first, msg);
+        changed.add(msg.id);
+
+        if (first.kind === 'start') {
+            subagentRefs.push({
+                id: msg.id,
+                createdAt: msg.createdAt,
+                kind: 'subagent-ref',
+                subagentId: first.subagentId,
+                title: first.title,
+                ...(msg.turn !== undefined && { turn: msg.turn }),
+                meta: msg.meta,
+            });
+        }
+    }
+
+    // Which rows belong to a subagent, keyed by the id they were received
+    // under. Built once here rather than stamped onto each row as it is
+    // created: rows are built in eight different places in this function, and
+    // a field that has to be set in eight places is a field that will be
+    // forgotten in the ninth — leaving that agent's work inline, silently.
+    const subagentBySourceId = new Map<string, string>();
+    for (const msg of tracedMessages) {
+        if (msg.subagentId) subagentBySourceId.set(msg.id, msg.subagentId);
+    }
 
     //
     // Phase 0.5: Message-to-Event Conversion
@@ -1344,11 +1453,24 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
         let existing = state.messages.get(id);
         if (!existing) continue;
 
+        // A subagent's row belongs to that agent's page, not to this timeline.
+        // It is filed and skipped here, at the last moment, so everything that
+        // shaped it — tool joins, permission settlement, text assembly — has
+        // already run.
+        const owningSubagent = existing.realID ? subagentBySourceId.get(existing.realID) : undefined;
+        if (owningSubagent) {
+            fileSubagentMessage(state, existing, owningSubagent);
+            continue;
+        }
+
         let message = convertReducerMessageToMessage(existing, state);
         if (message) {
             newMessages.push(message);
         }
     }
+
+    // The agents' one-line pointers, in the order their `start` arrived.
+    newMessages.push(...subagentRefs);
 
     //
     // Debug changes
@@ -1361,6 +1483,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
 
     return {
         messages: newMessages,
+        subagents: serializeSubagents(state),
         todos: state.latestTodos?.todos,
         usage: state.latestUsage ? {
             inputTokens: state.latestUsage.inputTokens,
@@ -1381,6 +1504,102 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
 
 function allocateId() {
     return Math.random().toString(36).substring(2, 15);
+}
+
+/**
+ * Find or create the registry entry for a subagent.
+ *
+ * Created on first sight rather than only on `start`, because a client that
+ * attaches mid-run — a resumed session, a second device, a reload — can receive
+ * an agent's messages before its lifecycle marker. Guessing a placeholder now
+ * and filling it in when the `start` eventually arrives is strictly better than
+ * dropping work the user can otherwise see.
+ */
+function ensureSubagent(state: ReducerState, subagentId: string, at: number): ReducerSubagent {
+    const existing = state.subagents.get(subagentId);
+    if (existing) return existing;
+    const created: ReducerSubagent = {
+        id: subagentId,
+        threadId: null,
+        parentThreadId: null,
+        parentId: null,
+        title: null,
+        status: 'running',
+        startedAt: at,
+        endedAt: null,
+        messageIds: [],
+    };
+    state.subagents.set(subagentId, created);
+    return created;
+}
+
+/**
+ * Apply a `start`/`stop` marker to the registry.
+ *
+ * `stop` deliberately does not merge into a missing entry: a stop for an agent
+ * this client never saw start would otherwise create a phantom entry with no
+ * transcript and no title, which reads worse than not listing it at all.
+ */
+function applySubagentLifecycle(
+    state: ReducerState,
+    lifecycle: Extract<NormalizedAgentContent, { type: 'subagent-lifecycle' }>,
+    message: NormalizedMessage,
+): void {
+    const entry = ensureSubagent(state, lifecycle.subagentId, message.createdAt);
+
+    if (lifecycle.kind === 'stop') {
+        entry.status = entry.status === 'running' ? 'completed' : entry.status;
+        entry.endedAt = message.createdAt;
+        return;
+    }
+
+    // A `start` may arrive more than once for the same agent — the parent turn
+    // can end before a child finishes, and the next turn re-emits it. Filling
+    // gaps rather than overwriting keeps the useful values from the first one.
+    if (lifecycle.title) entry.title = lifecycle.title;
+    if (lifecycle.threadId) entry.threadId = lifecycle.threadId;
+    if (lifecycle.parentThreadId) entry.parentThreadId = lifecycle.parentThreadId;
+    if (entry.startedAt === 0) entry.startedAt = message.createdAt;
+}
+
+/** File a row into its agent's transcript. */
+function fileSubagentMessage(state: ReducerState, row: ReducerMessage, subagentId: string): void {
+    const entry = ensureSubagent(state, subagentId, row.createdAt);
+    if (!entry.messageIds.includes(row.id)) {
+        entry.messageIds.push(row.id);
+    }
+}
+
+/**
+ * Resolve parents and turn the registry into what the UI consumes.
+ *
+ * The parent link is resolved here rather than when a `start` arrives because
+ * order is not guaranteed: a grandchild's activity can be reported before its
+ * parent's entry exists. Falling back to `agentPath`'s own hierarchy covers the
+ * backfill path, where the parent thread is not in the stream at all.
+ */
+function serializeSubagents(state: ReducerState): Record<string, SubagentView> | undefined {
+    if (state.subagents.size === 0) return undefined;
+
+    const byThreadId = new Map<string, string>();
+    for (const entry of state.subagents.values()) {
+        if (entry.threadId) byThreadId.set(entry.threadId, entry.id);
+    }
+
+    const out: Record<string, SubagentView> = {};
+    for (const entry of state.subagents.values()) {
+        const parentId = entry.parentThreadId ? byThreadId.get(entry.parentThreadId) ?? null : null;
+        const messages: Message[] = [];
+        for (const id of entry.messageIds) {
+            const row = state.messages.get(id);
+            if (!row) continue;
+            const message = convertReducerMessageToMessage(row, state);
+            if (message) messages.push(message);
+        }
+        const { messageIds: _messageIds, ...rest } = entry;
+        out[entry.id] = { ...rest, parentId, messages };
+    }
+    return out;
 }
 
 function processUsageData(state: ReducerState, usage: UsageData, timestamp: number) {

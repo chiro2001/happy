@@ -26,6 +26,9 @@ export function useDemoMessages(messages: Message[]) {
                     messagesMap: messagesMap,
                     reducerState: createReducer(),
                     isLoaded: true,
+                    // The demo messages are a flat script; nothing in them is a
+                    // subagent, so the registry stays empty.
+                    subagents: {},
                     hasMoreOlder: false,
                     isLoadingOlder: false
                 }

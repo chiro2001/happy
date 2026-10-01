@@ -113,6 +113,21 @@ export default function RootLayout() {
                     },
                 }}
             />
+            {/* A subagent's own page. Same chrome as the message detail view:
+                a plain centered title and a back button, because it is opened
+                from the chat and returned from the same way. The title is the
+                agent's path, which is long, so it is rendered by the screen
+                itself rather than truncated here. */}
+            <Stack.Screen
+                name="session/[id]/subagent/[subagentId]"
+                options={{
+                    headerShown: true,
+                    header: createPlainHeader,
+                    headerTitleAlign: 'center',
+                    headerBackTitle: t('common.back'),
+                    headerTitle: t('message.subagentUntitled'),
+                }}
+            />
             <Stack.Screen
                 name="machine/[id]"
                 options={{

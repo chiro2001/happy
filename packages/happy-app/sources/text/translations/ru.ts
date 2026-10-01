@@ -954,6 +954,15 @@ export const ru: TranslationStructure = {
         sending: 'Отправка…',
         sendFailed: ({ reason }: { reason: string }) => `Не отправлено: ${reason}`,
         unknownTime: 'неизвестное время',
+        subagentTitle: ({ path }: { path: string }) => `Субагент ${path}`,
+        subagentUntitled: 'Субагент',
+        subagentEmpty: 'Этот субагент пока не выдал никаких данных.',
+        subagentStatus: {
+            running: 'Выполняется…',
+            completed: 'Завершено',
+            failed: 'Ошибка',
+            interrupted: 'Прервано',
+        },
     },
 
     codex: {

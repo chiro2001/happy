@@ -946,6 +946,15 @@ export const it: TranslationStructure = {
         sending: 'Sending…',
         sendFailed: ({ reason }: { reason: string }) => `Non inviato: ${reason}`,
         unknownTime: 'ora sconosciuta',
+        subagentTitle: ({ path }: { path: string }) => `Subagente ${path}`,
+        subagentUntitled: 'Subagente',
+        subagentEmpty: 'Questo subagente non ha ancora prodotto output.',
+        subagentStatus: {
+            running: 'In corso…',
+            completed: 'Completato',
+            failed: 'Non riuscito',
+            interrupted: 'Interrotto',
+        },
     },
 
     codex: {

@@ -1018,6 +1018,13 @@ export function SessionViewLoaded({
         if (sessionId) router.push(`/session/${sessionId}/files`);
     }, [router, sessionId]);
 
+    // Subagents open as their own page rather than expanding in place: an agent
+    // can run for minutes and emit hundreds of rows, and nesting that in the
+    // conversation would bury the main thread it is only one part of.
+    const handleOpenSubagent = React.useCallback((subagentId: string) => {
+        if (sessionId) router.push(`/session/${sessionId}/subagent/${subagentId}`);
+    }, [router, sessionId]);
+
     // Nothing is fetched for a chat that does not exist, so there is nothing to
     // complete against either.
     const handleAutocompleteSuggestions = React.useCallback((query: string) => (
@@ -1143,6 +1150,7 @@ export function SessionViewLoaded({
                         onBottomDockVisibilityChange={usesFloatingMobileDock
                             ? handleChatBottomVisibilityChange
                             : undefined}
+                        onOpenSubagent={handleOpenSubagent}
                     />
                 )}
             </Deferred>

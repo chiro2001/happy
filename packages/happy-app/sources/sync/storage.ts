@@ -12,7 +12,7 @@ import {
     selectPendingCommunications,
     type PendingAgentCommunication,
 } from "./agentCommunications";
-import { createReducer, reducer, ReducerState, registerUserMessageServerIds } from "./reducer/reducer";
+import { createReducer, reducer, ReducerState, SubagentView, registerUserMessageServerIds } from "./reducer/reducer";
 import { Message, messageSortKey } from "./typesMessage";
 import { NormalizedMessage } from "./typesRaw";
 import { isMachineOnline } from '@/utils/machineUtils';
@@ -119,6 +119,16 @@ interface SessionMessages {
     messagesMap: Record<string, Message>;
     reducerState: ReducerState;
     isLoaded: boolean;
+    /**
+     * Subagents seen in this session, by id, each with its own transcript.
+     *
+     * Held beside the conversation rather than inside it because a subagent is
+     * a page you open, not a row you scroll past: the timeline keeps one
+     * `subagent-ref` per agent, and this is what that row points at. Rebuilt
+     * from the reducer on every pass, since the reducer is the only thing that
+     * knows which rows belong to which agent.
+     */
+    subagents: Record<string, SubagentView>;
     // True when the server reported more older messages exist beyond the
     // oldest one we currently have. Drives the "load older" affordance in
     // the chat list. Defaults to false until the initial fetch resolves —
@@ -769,6 +779,7 @@ export const storage = create<StorageState>()((set, get) => {
                         updatedSessionMessages[session.id] = {
                             messages: messagesArray,
                             messagesMap: mergedMessagesMap,
+                            subagents: reducerResult.subagents ?? existingSessionMessages.subagents,
                             reducerState: existingSessionMessages.reducerState, // The reducer modifies state in-place, so this has the updates
                             isLoaded: existingSessionMessages.isLoaded,
                             hasMoreOlder: existingSessionMessages.hasMoreOlder,
@@ -882,6 +893,7 @@ export const storage = create<StorageState>()((set, get) => {
                     messagesMap: {},
                     reducerState: createReducer(),
                     isLoaded: false,
+                    subagents: {},
                     hasMoreOlder: false,
                     isLoadingOlder: false
                 };
@@ -953,6 +965,7 @@ export const storage = create<StorageState>()((set, get) => {
                             ...existingSession,
                             messages: messagesArray,
                             messagesMap: mergedMessagesMap,
+                            subagents: reducerResult.subagents ?? existingSession.subagents,
                             reducerState: existingSession.reducerState, // Explicitly include the mutated reducer state
                             isLoaded: true
                         }
@@ -971,6 +984,7 @@ export const storage = create<StorageState>()((set, get) => {
                 messagesMap: {},
                 reducerState: createReducer(),
                 isLoaded: false,
+                subagents: {},
                 hasMoreOlder: false,
                 isLoadingOlder: false,
             };
@@ -1014,11 +1028,16 @@ export const storage = create<StorageState>()((set, get) => {
                 // Process AgentState if it exists
                 let messages: Message[] = [];
                 let messagesMap: Record<string, Message> = {};
+                // The registry the `messages` above were reduced with. Kept
+                // beside them because this branch writes the whole session
+                // entry at once, below.
+                let subagents: Record<string, SubagentView> = {};
 
                 if (agentState) {
                     // Process AgentState through reducer to get initial permission messages
                     const reducerResult = reducer(reducerState, [], agentState);
                     const processedMessages = reducerResult.messages;
+                    subagents = reducerResult.subagents ?? {};
 
                     processedMessages.forEach(message => {
                         messagesMap[message.id] = message;
@@ -1049,6 +1068,7 @@ export const storage = create<StorageState>()((set, get) => {
                             reducerState,
                             messages,
                             messagesMap,
+                            subagents,
                             isLoaded: true,
                             hasMoreOlder: false,
                             isLoadingOlder: false
@@ -1717,6 +1737,18 @@ export function useSessions() {
 
 export function useSession(id: string): Session | null {
     return storage(useShallow((state) => state.sessions[id] ?? null));
+}
+
+/**
+ * The subagents a session has seen, by id.
+ *
+ * A stable empty object rather than a fresh `{}` per call: this is selected
+ * under `useShallow`, and a new object every render would make every subscriber
+ * re-render on every store change.
+ */
+const NO_SUBAGENTS: Record<string, SubagentView> = {};
+export function useSessionSubagents(sessionId: string): Record<string, SubagentView> {
+    return storage(useShallow((state) => state.sessionMessages[sessionId]?.subagents ?? NO_SUBAGENTS));
 }
 
 export function useProjects(): Record<string, Project> {

@@ -1990,7 +1990,13 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
             }
         });
 
-        it('drops start/stop lifecycle markers', () => {
+        /**
+         * These used to be dropped. They are the only explicit statement that a
+         * subagent existed, what it was called and which thread it ran on, so
+         * dropping them left the reducer unable to tell a subagent's work from
+         * the main agent's — which is why it all landed in one timeline.
+         */
+        it('keeps start/stop lifecycle markers as their own row kind', () => {
             const subagent = createId();
             const start = normalizeRawMessage('db-start-1', null, 1, {
                 ...base,
@@ -2002,11 +2008,28 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
                         role: 'agent',
                         turn: 'turn-1',
                         subagent,
-                        ev: { t: 'start', title: 'Research agent' }
+                        ev: {
+                            t: 'start',
+                            title: 'Research agent',
+                            threadId: 'provider-thread-1',
+                            parentThreadId: 'provider-thread-0',
+                        }
                     }
                 }
             });
-            expect(start).toBeNull();
+            expect(start?.role).toBe('agent');
+            expect(start?.subagentId).toBe(subagent);
+            // Narrowing by role is what makes `content` indexable — the union
+            // allows an event payload there too.
+            const startContent = start && start.role === 'agent' ? start.content[0] : null;
+            expect(startContent).toMatchObject({
+                type: 'subagent-lifecycle',
+                kind: 'start',
+                subagentId: subagent,
+                title: 'Research agent',
+                threadId: 'provider-thread-1',
+                parentThreadId: 'provider-thread-0',
+            });
 
             const stop = normalizeRawMessage('db-stop-1', null, 1, {
                 ...base,
@@ -2022,7 +2045,17 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
                     }
                 }
             });
-            expect(stop).toBeNull();
+            expect(stop?.subagentId).toBe(subagent);
+            const stopContent = stop && stop.role === 'agent' ? stop.content[0] : null;
+            expect(stopContent).toMatchObject({
+                type: 'subagent-lifecycle',
+                kind: 'stop',
+                subagentId: subagent,
+                // A stop restates nothing: the row exists to close the agent,
+                // and the title/thread are already on its `start`.
+                title: null,
+                threadId: null,
+            });
         });
 
         it('returns null for non-cuid subagent identifiers', () => {

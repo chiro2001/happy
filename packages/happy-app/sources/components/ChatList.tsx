@@ -180,6 +180,8 @@ export const ChatList = React.memo((props: {
     headerOverlayHeight?: number;
     onHeaderBackdropVisibilityChange?: (visible: boolean) => void;
     onBottomDockVisibilityChange?: (visible: boolean) => void;
+    /** Open a subagent's own page. Bound by the screen, which owns navigation. */
+    onOpenSubagent?: (subagentId: string) => void;
 }) => {
     const { messages, hasMoreOlder, isLoadingOlder } = useSessionMessages(props.session.id);
     return (
@@ -190,6 +192,7 @@ export const ChatList = React.memo((props: {
             messages={messages}
             hasMoreOlder={hasMoreOlder}
             isLoadingOlder={isLoadingOlder}
+            onOpenSubagent={props.onOpenSubagent}
             topContentInset={props.topContentInset}
             bottomContentInset={props.bottomContentInset}
             scrollButtonInset={props.scrollButtonInset}
@@ -253,6 +256,7 @@ const ChatListInternal = React.memo((props: {
     headerOverlayHeight?: number,
     onHeaderBackdropVisibilityChange?: (visible: boolean) => void,
     onBottomDockVisibilityChange?: (visible: boolean) => void,
+    onOpenSubagent?: (subagentId: string) => void,
 }) => {
     const { theme } = useUnistyles();
     const listRef = React.useRef<FlashListRef<ListItem>>(null);
@@ -609,10 +613,11 @@ const ChatListInternal = React.memo((props: {
                     metadata={props.metadata}
                     sessionId={props.sessionId}
                     copyText={agentCopyTextByMessageId.get(item.message.id)}
+                    onOpenSubagent={props.onOpenSubagent}
                 />
             </DiffSyntaxCell>
         );
-    }, [agentCopyTextByMessageId, props.metadata, props.sessionId, syntaxViewport, isGroupExpanded, handleToggleGroup]);
+    }, [agentCopyTextByMessageId, props.metadata, props.sessionId, props.onOpenSubagent, syntaxViewport, isGroupExpanded, handleToggleGroup]);
 
     // The list is inverted, so offset 0 is the newest message and growing
     // offsets walk back through history.

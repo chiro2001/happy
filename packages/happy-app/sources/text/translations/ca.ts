@@ -948,6 +948,15 @@ export const ca: TranslationStructure = {
         sending: 'Sending…',
         sendFailed: ({ reason }: { reason: string }) => `No enviat: ${reason}`,
         unknownTime: 'temps desconegut',
+        subagentTitle: ({ path }: { path: string }) => `Subagent ${path}`,
+        subagentUntitled: 'Subagent',
+        subagentEmpty: 'Aquest subagent encara no ha produït cap sortida.',
+        subagentStatus: {
+            running: 'En curs…',
+            completed: 'Completat',
+            failed: 'Fallit',
+            interrupted: 'Interromput',
+        },
     },
 
     codex: {

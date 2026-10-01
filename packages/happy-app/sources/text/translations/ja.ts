@@ -949,6 +949,15 @@ export const ja: TranslationStructure = {
         sending: 'Sending…',
         sendFailed: ({ reason }: { reason: string }) => `未送信: ${reason}`,
         unknownTime: '不明な時間',
+        subagentTitle: ({ path }: { path: string }) => `サブエージェント ${path}`,
+        subagentUntitled: 'サブエージェント',
+        subagentEmpty: 'このサブエージェントはまだ出力していません。',
+        subagentStatus: {
+            running: '実行中…',
+            completed: '完了',
+            failed: '失敗',
+            interrupted: '中断',
+        },
     },
 
     codex: {

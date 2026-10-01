@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { MarkdownView } from "./markdown/MarkdownView";
 import { t } from '@/text';
-import { Message, UserTextMessage, AgentTextMessage, ToolCallMessage, isOtherParticipantMessage } from "@/sync/typesMessage";
+import { Message, UserTextMessage, AgentTextMessage, ToolCallMessage, SubagentRefMessage, isOtherParticipantMessage } from "@/sync/typesMessage";
 import { Metadata } from "@/sync/storageTypes";
 import { ToolView } from "./tools/ToolView";
 import { AgentEvent, SessionAuthor } from "@/sync/typesRaw";
@@ -25,6 +25,12 @@ export const MessageView = React.memo((props: {
   sessionId: string;
   getMessageById?: (id: string) => Message | null;
   copyText?: string;
+  /**
+   * Open a subagent's own page. Absent in surfaces that cannot navigate —
+   * the reference row then renders without a chevron rather than looking
+   * tappable and doing nothing.
+   */
+  onOpenSubagent?: (subagentId: string) => void;
 }) => {
   return (
     <View
@@ -38,6 +44,7 @@ export const MessageView = React.memo((props: {
           sessionId={props.sessionId}
           getMessageById={props.getMessageById}
           copyText={props.copyText}
+          onOpenSubagent={props.onOpenSubagent}
         />
       </View>
     </View>
@@ -51,6 +58,7 @@ function RenderBlock(props: {
   sessionId: string;
   getMessageById?: (id: string) => Message | null;
   copyText?: string;
+  onOpenSubagent?: (subagentId: string) => void;
 }): React.ReactElement {
   switch (props.message.kind) {
     case 'user-text':
@@ -75,6 +83,14 @@ function RenderBlock(props: {
 
     case 'agent-event':
       return <AgentEventBlock event={props.message.event} metadata={props.metadata} />;
+
+    case 'subagent-ref':
+      return (
+        <SubagentRefBlock
+          message={props.message}
+          onOpen={props.onOpenSubagent}
+        />
+      );
 
 
     default:
@@ -369,6 +385,51 @@ function AgentEventBlock(props: {
   );
 }
 
+/**
+ * The conversation's pointer to a subagent.
+ *
+ * A subagent is a place, not a row: its transcript lives on its own page. What
+ * the conversation keeps is this — one line standing where the agent was
+ * spawned, so the main thread reads as "spawned X, moved on" instead of being
+ * interleaved with work that happened somewhere else.
+ *
+ * Tapping opens the agent. Without a navigator (a preview, a share image) the
+ * row renders flat rather than looking tappable and doing nothing.
+ */
+function SubagentRefBlock(props: {
+  message: SubagentRefMessage;
+  onOpen?: (subagentId: string) => void;
+}) {
+  const path = props.message.title;
+  const open = props.onOpen;
+  const content = (
+    <>
+      <Ionicons name="git-branch-outline" size={16} color={styles.subagentIconColor.color} />
+      <View style={styles.subagentText}>
+        <Text style={styles.subagentTitle} numberOfLines={1}>
+          {path ? t('message.subagentTitle', { path }) : t('message.subagentUntitled')}
+        </Text>
+      </View>
+      {open && (
+        <Ionicons name="chevron-forward" size={16} color={styles.subagentChevronColor.color} />
+      )}
+    </>
+  );
+
+  if (!open) {
+    return <View style={styles.subagentRow}>{content}</View>;
+  }
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.subagentRow, pressed && styles.subagentRowPressed]}
+      onPress={() => open(props.message.subagentId)}
+      accessibilityRole="button"
+    >
+      {content}
+    </Pressable>
+  );
+}
+
 function ToolCallBlock(props: {
   message: ToolCallMessage;
   metadata: Metadata | null;
@@ -541,5 +602,38 @@ const styles = StyleSheet.create((theme) => ({
   debugText: {
     color: theme.colors.agentEventText,
     fontSize: 12,
+  },
+  // The pointer to a subagent. Quieter than a tool card on purpose: it marks
+  // where work moved elsewhere, and the work itself is one tap away.
+  subagentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 8,
+    marginVertical: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: theme.colors.surfaceHigh,
+  },
+  subagentRowPressed: {
+    opacity: 0.7,
+  },
+  // Color-only styles: the icons take their tint from here, alongside the text
+  // they sit next to, so the two cannot drift apart.
+  subagentIconColor: {
+    color: theme.colors.textSecondary,
+  },
+  subagentChevronColor: {
+    color: theme.colors.textSecondary,
+  },
+  subagentText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  subagentTitle: {
+    fontSize: 14,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
+    color: theme.colors.text,
   },
 }));

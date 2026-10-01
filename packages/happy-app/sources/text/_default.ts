@@ -1062,6 +1062,18 @@ export const en = {
         sending: 'Sending…',
         sendFailed: ({ reason }: { reason: string }) => `Not sent: ${reason}`,
         unknownTime: 'unknown time',
+        // The pointer row standing where a subagent was spawned. `path` is the
+        // agent's own path, which is the hierarchy (`/root/x/y`), so it names
+        // the agent and says how deep it sits in one string.
+        subagentTitle: ({ path }: { path: string }) => `Subagent ${path}`,
+        subagentUntitled: 'Subagent',
+        subagentEmpty: 'This subagent has not produced any output yet.',
+        subagentStatus: {
+            running: 'Working…',
+            completed: 'Completed',
+            failed: 'Failed',
+            interrupted: 'Interrupted',
+        },
     },
 
     codex: {

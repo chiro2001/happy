@@ -92,6 +92,13 @@ const sessionTurnStartEventSchema = z.object({
 const sessionStartEventSchema = z.object({
     t: z.literal('start'),
     title: z.string().optional(),
+    // Kept in step with `@slopus/happy-wire`'s copy by hand: this file validates
+    // what a client receives before normalizing it, and parses with a local
+    // schema so a wire version skew cannot silently reshape incoming data.
+    // Adding a field to one without the other leaves it invisible here — the
+    // schema strips unknown keys and reports nothing.
+    threadId: z.string().optional(),
+    parentThreadId: z.string().optional(),
 });
 
 const sessionTurnEndEventSchema = z.object({
@@ -516,7 +523,7 @@ export const RawRecordSchema = rawRecordSchema;
 // Normalized types
 //
 
-type NormalizedAgentContent =
+export type NormalizedAgentContent =
     {
         type: 'text';
         text: string;
@@ -557,6 +564,26 @@ type NormalizedAgentContent =
         type: 'sidechain'
         uuid: string;
         prompt: string
+    } | {
+        /**
+         * A subagent's boundary, as its own row rather than a chat line.
+         *
+         * These used to be dropped (`start` and `stop` both returned null with
+         * the note "currently not rendered as chat content"), which discarded
+         * the only explicit signal that a subagent existed, ended, or what it
+         * was called. Carrying them is what lets the reducer build a registry
+         * instead of guessing ownership from message order.
+         */
+        type: 'subagent-lifecycle';
+        kind: 'start' | 'stop';
+        subagentId: string;
+        /** The agent's own thread — the handle `thread/read` and `thread/fork` need. */
+        threadId: string | null;
+        /** The thread it was reported on: its parent agent, or null for a top-level one. */
+        parentThreadId: string | null;
+        title: string | null;
+        uuid: string;
+        parentUUID: string | null;
     };
 
 export type NormalizedMessage = ({
@@ -579,6 +606,20 @@ export type NormalizedMessage = ({
     meta?: MessageMeta,
     usage?: UsageData,
     /**
+     * The subagent this message belongs to, when it belongs to one.
+     *
+     * Distinct from `isSidechain`, which answers a different question: that
+     * flag marks a message that is *not* part of the visible conversation, and
+     * the reducer uses it to hide Claude's Task sidechains. A subagent's
+     * messages are not hidden — they are shown, just somewhere else — so
+     * overloading one flag for both would either hide work that should be
+     * visible or leak it into the timeline. The reducer routes on this field.
+     *
+     * The value is the session-protocol subagent id (a cuid), stable across
+     * restarts because it is derived from the provider thread id.
+     */
+    subagentId?: string,
+    /**
      * Underlying Claude `uuid` for this message — used as the rewind point
      * for the session fork / duplicate flow. Optional because some message
      * sources (legacy events, server-emitted control messages) have none.
@@ -598,7 +639,7 @@ export type NormalizedMessage = ({
     author?: SessionAuthor,
 };
 
-function normalizeSessionEnvelope(
+function normalizeSessionEnvelopeInner(
     envelope: SessionEnvelope,
     localId: string | null,
     createdAt: number,
@@ -630,8 +671,33 @@ function normalizeSessionEnvelope(
     }
 
     if (envelope.ev.t === 'start' || envelope.ev.t === 'stop') {
-        // Lifecycle marker for subagent boundaries; currently not rendered as chat content.
-        return null;
+        // A subagent's boundary. Rendered as its own row kind rather than chat
+        // content: the reducer reads these to build the subagent registry, and
+        // the timeline renders a one-line entry from the `start` rather than
+        // the agent's whole transcript. `stop` carries no title or thread for
+        // the same reason a close marker does not restate what it closes.
+        if (!envelope.subagent) {
+            return null;
+        }
+        return {
+            id: messageId,
+            localId,
+            createdAt: messageCreatedAt,
+            role: 'agent',
+            isSidechain: false,
+            content: [{
+                type: 'subagent-lifecycle',
+                kind: envelope.ev.t,
+                subagentId: envelope.subagent,
+                threadId: envelope.ev.t === 'start' ? envelope.ev.threadId ?? null : null,
+                parentThreadId: envelope.ev.t === 'start' ? envelope.ev.parentThreadId ?? null : null,
+                title: envelope.ev.t === 'start' ? envelope.ev.title ?? null : null,
+                uuid: contentUUID,
+                parentUUID: null,
+            }],
+            meta,
+            turn: envelope.turn,
+        } satisfies NormalizedMessage;
     }
 
     if (envelope.ev.t === 'user-message-accepted') {
@@ -847,6 +913,33 @@ function normalizeSessionEnvelope(
     }
 
     return null;
+}
+
+/**
+ * Attach the subagent a message belongs to, once, on the way out.
+ *
+ * `normalizeSessionEnvelope` has around twenty return statements, one per event
+ * kind. Threading `subagentId` through each of them would mean the next event
+ * kind added silently loses its subagent — which is exactly the class of bug
+ * this whole change exists to undo. Wrapping keeps it to one place that cannot
+ * be forgotten.
+ */
+function normalizeSessionEnvelope(
+    envelope: SessionEnvelope,
+    localId: string | null,
+    createdAt: number,
+    meta: MessageMeta | undefined,
+): NormalizedMessage | null {
+    const message = normalizeSessionEnvelopeInner(envelope, localId, createdAt, meta);
+    if (!message || !envelope.subagent) {
+        return message;
+    }
+    // The lifecycle rows already carry their own `subagentId`; setting it twice
+    // would be harmless but the guard keeps the shape obvious.
+    if (message.subagentId === envelope.subagent) {
+        return message;
+    }
+    return { ...message, subagentId: envelope.subagent };
 }
 
 export function normalizeRawMessage(id: string, localId: string | null, createdAt: number, raw: RawRecord): NormalizedMessage | null {
