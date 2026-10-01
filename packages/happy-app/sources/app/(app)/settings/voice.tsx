@@ -40,6 +40,35 @@ function formatVoiceTime(totalSeconds: number): string {
     return `${mins}m ${secs}s`;
 }
 
+/**
+ * The three context tiers, described the way the cost model measures them.
+ *
+ * Everything a realtime session carries is re-billed on every turn, so the
+ * tier is the single biggest lever on what a long voice session costs. The
+ * descriptions below are deliberately about *what the assistant will know*,
+ * not about tokens — that is the trade the user is actually making.
+ */
+const VOICE_CONTEXT_MODES = [
+    {
+        value: 'minimal' as const,
+        label: '极简',
+        summary: '只播报「哪个会话做完了」，不注入任何消息正文',
+        detail: '上下文只保留会话骨架和摘要，历史为 0 条。最省，但助手无法引用输出细节，需要时会自己向该会话询问。',
+    },
+    {
+        value: 'lite' as const,
+        label: '精简',
+        summary: '后台会话只报完成，当前会话保留最近 10 条历史',
+        detail: '推荐。保留全部工具能力（发消息、审批权限），后台会话的产出不进入上下文，只在完成时播报一句。',
+    },
+    {
+        value: 'full' as const,
+        label: '完整',
+        summary: '所有会话的消息正文全部注入（原始行为）',
+        detail: '理解最好，也最贵：一次上万 token 的后台输出会留在上下文里，并在之后每一轮重复计费。',
+    },
+];
+
 export default React.memo(function VoiceSettingsScreen() {
     const router = useRouter();
     const auth = useAuth();
@@ -48,6 +77,7 @@ export default React.memo(function VoiceSettingsScreen() {
     const [voiceBypassToken, setVoiceBypassToken] = useSettingMutable('voiceBypassToken');
     const [voiceProvider, setVoiceProvider] = useSettingMutable('voiceProvider');
     const [qwenModel, setQwenModel] = useSettingMutable('qwenModel');
+    const [voiceContextMode, setVoiceContextMode] = useSettingMutable('voiceContextMode');
     // Device-local: the API key must not ride the account settings sync, and
     // half-duplex depends on the device's echo cancellation, not the account.
     const [qwenApiKey, setQwenApiKey] = useLocalSettingMutable('qwenApiKey');
@@ -208,6 +238,8 @@ export default React.memo(function VoiceSettingsScreen() {
             `voice messages: ${voiceLocalCounters.voiceMessageCount}`,
         ].join('\n');
     }, [voiceLocalCounters]);
+
+    const contextMode = VOICE_CONTEXT_MODES.find(m => m.value === voiceContextMode) ?? VOICE_CONTEXT_MODES[2];
 
     return (
         <ItemList style={{ paddingTop: 0 }}>
@@ -458,6 +490,44 @@ export default React.memo(function VoiceSettingsScreen() {
                         />
                     </>
                 )}
+            </ItemGroup>
+
+            {/* Context tier — applies to whichever backend is selected, since
+                it governs what the app injects, not how it is spoken. */}
+            <ItemGroup
+                title="语音上下文档位"
+                footer={
+                    '进入语音会话的内容会在之后每一轮重新计费，所以档位直接决定长对话的成本。'
+                    + '切换在下次开启语音时生效。精简档用「完成播报」代替后台会话的正文注入，'
+                    + '助手需要细节时会主动向对应会话询问。'
+                }
+            >
+                <Item
+                    title="当前档位"
+                    subtitle={`${contextMode.label} · ${contextMode.summary}`}
+                    subtitleLines={0}
+                    icon={<Ionicons name="layers-outline" size={29} color="#5856D6" />}
+                    onPress={() => {
+                        Modal.alert(
+                            '选择语音上下文档位',
+                            '下次开启语音会话时生效，不影响正在进行的会话。',
+                            [
+                                ...VOICE_CONTEXT_MODES.map(mode => ({
+                                    text: `${mode.label} — ${mode.summary}`,
+                                    onPress: () => setVoiceContextMode(mode.value),
+                                })),
+                                { text: '取消', style: 'cancel' as const },
+                            ],
+                        );
+                    }}
+                />
+                <Item
+                    title="档位说明"
+                    subtitle={contextMode.detail}
+                    subtitleLines={0}
+                    icon={<Ionicons name="information-circle-outline" size={29} color="#8E8E93" />}
+                    showChevron={false}
+                />
             </ItemGroup>
 
             {/* Bring Your Own Agent — ElevenLabs-only: it configures which

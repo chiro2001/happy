@@ -51,7 +51,7 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
         // It talks straight to DashScope with a device-local key, so none of
         // the Happy-server credential/paywall flow below applies. Returning
         // early keeps that path completely untouched.
-        const { voiceProvider } = storage.getState().settings;
+        const { voiceProvider, voiceContextMode } = storage.getState().settings;
         // The credential and workspace id are device-local: the account
         // settings blob is uploaded to the server, so secrets must not live
         // there (see sync/localSettings.ts).
@@ -72,6 +72,7 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
                 onboardingPromptLoadCount: 0,
                 voiceMessageCount: getVoiceMessageCount(),
                 includePaidVoiceOnboarding: false,
+                contextMode: voiceContextMode,
             });
 
             const conversationId = await voiceSession.startSession({
@@ -159,6 +160,7 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
             onboardingPromptLoadCount,
             voiceMessageCount,
             includePaidVoiceOnboarding: !hasPro && voiceUpsellVariant === 'voice-onboarding-and-upsell',
+            contextMode: voiceContextMode,
         });
         const firstMessage = buildVoiceFirstMessage({
             hasPro,

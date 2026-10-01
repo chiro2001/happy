@@ -1,5 +1,6 @@
 import { getCurrentRealtimeSessionId, getVoiceSession, isVoiceSessionStarted, setCurrentRealtimeSessionId } from '../RealtimeSession';
 import {
+    formatCompletionNotice,
     formatNewMessages,
     formatPermissionRequest,
     formatReadyEvent,
@@ -10,7 +11,16 @@ import {
 } from './contextFormatters';
 import { storage } from '@/sync/storage';
 import { Message } from '@/sync/typesMessage';
-import { VOICE_CONFIG } from '../voiceConfig';
+import {
+    DEFAULT_VOICE_CONTEXT_MODE,
+    getVoiceConfig,
+    isBackgroundSession as isBackground,
+    shouldAnnounceCompletion,
+    shouldInjectMessageBody,
+    VOICE_CONFIG,
+    type VoiceConfig,
+    type VoiceContextMode,
+} from '../voiceConfig';
 
 /**
  * Centralized voice assistant hooks for multi-session context updates.
@@ -30,6 +40,34 @@ interface SessionMetadata {
 }
 
 let shownSessions = new Set<string>();
+
+/**
+ * The tier in force for the running voice session.
+ *
+ * Module state rather than a prop because every one of these hooks is called
+ * from the sync engine, which has no access to React context. `onVoiceStarted`
+ * refreshes it from settings, so changing the tier takes effect on the next
+ * voice session without touching the running one.
+ */
+let currentConfig: VoiceConfig = VOICE_CONFIG;
+
+/** Switch tiers. Called once per voice session, from `onVoiceStarted`. */
+export function setVoiceConfig(mode: VoiceContextMode | undefined) {
+    currentConfig = getVoiceConfig(mode ?? DEFAULT_VOICE_CONTEXT_MODE);
+}
+
+/** The tier currently in force; exported for tests and diagnostics. */
+export function getActiveVoiceConfig(): VoiceConfig {
+    return currentConfig;
+}
+
+/**
+ * A session other than the one the user is looking at. In the reporting tiers
+ * these are announced rather than transcribed — see `REPORT_ONLY_BACKGROUND`.
+ */
+function isBackgroundSession(sessionId: string): boolean {
+    return isBackground(getCurrentRealtimeSessionId(), sessionId);
+}
 
 // Prompt queue — batched text messages that trigger agent responses
 let pendingPrompts: string[] = [];
@@ -68,7 +106,7 @@ function flushPendingPrompts() {
  * Send silent background context — always immediate, never queued.
  */
 function sendContext(update: string | null | undefined) {
-    if (VOICE_CONFIG.ENABLE_DEBUG_LOGGING) {
+    if (currentConfig.ENABLE_DEBUG_LOGGING) {
         console.log('🎤 Voice: sendContext:', update);
     }
     if (!update) return;
@@ -82,7 +120,7 @@ function sendContext(update: string | null | undefined) {
  * Queued while anyone (user or agent) is speaking, flushed on idle.
  */
 function sendPrompt(update: string | null | undefined) {
-    if (VOICE_CONFIG.ENABLE_DEBUG_LOGGING) {
+    if (currentConfig.ENABLE_DEBUG_LOGGING) {
         console.log('🎤 Voice: sendPrompt:', update);
     }
     if (!update) return;
@@ -102,13 +140,20 @@ function sendPrompt(update: string | null | undefined) {
  * Shared code path for both voice start and session focus.
  * Returns the formatted string (for initial prompt building) or null if already shown.
  */
-function injectSessionContext(sessionId: string): string | null {
+function injectSessionContext(sessionId: string, background = false): string | null {
     if (shownSessions.has(sessionId)) return null;
     shownSessions.add(sessionId);
     const session = storage.getState().sessions[sessionId];
     if (!session) return null;
     const messages = storage.getState().sessionMessages[sessionId]?.messages ?? [];
-    return formatSessionFull(session, messages);
+    // A background session gets the skeleton (id, path, summary) and no
+    // transcript: messages from a session the user is not looking at are the
+    // single most expensive thing we can put in context, and the assistant can
+    // ask that session to summarise itself when the user wants detail.
+    const config = !shouldInjectMessageBody(currentConfig, background)
+        ? { ...currentConfig, MAX_HISTORY_MESSAGES: 0 }
+        : currentConfig;
+    return formatSessionFull(session, messages, config);
 }
 
 /**
@@ -130,9 +175,9 @@ export const voiceHooks = {
      * Called when a session comes online/connects
      */
     onSessionOnline(sessionId: string, metadata?: SessionMetadata) {
-        if (VOICE_CONFIG.DISABLE_SESSION_STATUS) return;
+        if (currentConfig.DISABLE_SESSION_STATUS) return;
 
-        const ctx = injectSessionContext(sessionId);
+        const ctx = injectSessionContext(sessionId, isBackgroundSession(sessionId));
         if (ctx) sendContext(ctx);
         sendContext(formatSessionOnline(sessionId, metadata));
     },
@@ -141,9 +186,9 @@ export const voiceHooks = {
      * Called when a session goes offline/disconnects
      */
     onSessionOffline(sessionId: string, metadata?: SessionMetadata) {
-        if (VOICE_CONFIG.DISABLE_SESSION_STATUS) return;
+        if (currentConfig.DISABLE_SESSION_STATUS) return;
 
-        const ctx = injectSessionContext(sessionId);
+        const ctx = injectSessionContext(sessionId, isBackgroundSession(sessionId));
         if (ctx) sendContext(ctx);
         sendContext(formatSessionOffline(sessionId, metadata));
     },
@@ -152,9 +197,11 @@ export const voiceHooks = {
      * Called when user navigates to/views a session
      */
     onSessionFocus(sessionId: string, metadata?: SessionMetadata) {
-        if (VOICE_CONFIG.DISABLE_SESSION_FOCUS) return;
+        if (currentConfig.DISABLE_SESSION_FOCUS) return;
         if (getCurrentRealtimeSessionId() === sessionId) return;
         setCurrentRealtimeSessionId(sessionId);
+        // Focus moved to this session, so from here on it is the foreground one
+        // and gets the full treatment even in the reporting tiers.
         const ctx = injectSessionContext(sessionId);
         if (ctx) sendContext(ctx);
         sendContext(formatSessionFocus(sessionId, metadata));
@@ -164,10 +211,13 @@ export const voiceHooks = {
      * Called when Claude requests permission for a tool use
      */
     onPermissionRequested(sessionId: string, requestId: string, toolName: string, toolArgs: any) {
-        if (VOICE_CONFIG.DISABLE_PERMISSION_REQUESTS) return;
+        if (currentConfig.DISABLE_PERMISSION_REQUESTS) return;
 
-        const ctx = injectSessionContext(sessionId);
+        const background = isBackgroundSession(sessionId);
+        const ctx = injectSessionContext(sessionId, background);
         if (ctx) sendContext(ctx);
+        // Permission requests are always a prompt: the agent is blocked until
+        // someone answers, so this must reach the user even in minimal mode.
         sendPrompt(formatPermissionRequest(sessionId, requestId, toolName, toolArgs));
     },
 
@@ -175,9 +225,19 @@ export const voiceHooks = {
      * Called when agent sends a message/response
      */
     onMessages(sessionId: string, messages: Message[]) {
-        if (VOICE_CONFIG.DISABLE_MESSAGES) return;
+        if (currentConfig.DISABLE_MESSAGES) return;
 
-        const ctx = injectSessionContext(sessionId);
+        const background = isBackgroundSession(sessionId);
+        if (!shouldInjectMessageBody(currentConfig, background)) {
+            // Deliberately silent. A turn produces several messages (tool calls,
+            // partial text, the final answer); announcing each one would make
+            // the assistant talk over itself. The turn's `ready` event is the
+            // single point where we know the work is done — that is where the
+            // completion notice is sent (see onReady).
+            return;
+        }
+
+        const ctx = injectSessionContext(sessionId, background);
         if (ctx) sendContext(ctx);
         sendContext(formatNewMessages(sessionId, messages));
     },
@@ -187,7 +247,12 @@ export const voiceHooks = {
      * Builds initial prompt with session directory + full current session context.
      */
     onVoiceStarted(sessionId: string): string {
-        if (VOICE_CONFIG.ENABLE_DEBUG_LOGGING) {
+        // Pick up the tier chosen in settings. Doing it here (rather than in the
+        // mic handler) keeps every entry point — including future ones — on the
+        // same setting, and takes effect on the next session, never mid-call.
+        setVoiceConfig(storage.getState().settings.voiceContextMode);
+
+        if (currentConfig.ENABLE_DEBUG_LOGGING) {
             console.log('🎤 Voice session started for:', sessionId);
         }
         shownSessions.clear();
@@ -196,11 +261,15 @@ export const voiceHooks = {
 
         let prompt = '';
 
-        // Session directory — all active sessions with titles
-        prompt += formatSessionDirectory() + '\n\n';
+        // Session directory — all active sessions with titles. Skipped in the
+        // minimal tier, where a fresh session should cost a brief and nothing
+        // else; the assistant can still reach sessions by id.
+        if (currentConfig.INCLUDE_SESSION_DIRECTORY) {
+            prompt += formatSessionDirectory() + '\n\n';
+        }
 
         // Full context for the current session
-        const ctx = injectSessionContext(sessionId);
+        const ctx = injectSessionContext(sessionId, false);
         if (ctx) {
             prompt += 'CURRENT SESSION:\n\n' + ctx;
         }
@@ -212,9 +281,21 @@ export const voiceHooks = {
      * Called when Claude Code finishes processing (ready event)
      */
     onReady(sessionId: string) {
-        if (VOICE_CONFIG.DISABLE_READY_EVENTS) return;
+        if (currentConfig.DISABLE_READY_EVENTS) return;
 
-        const ctx = injectSessionContext(sessionId);
+        const background = isBackgroundSession(sessionId);
+        if (shouldAnnounceCompletion(currentConfig, background)) {
+            // One cheap notice per finished turn instead of the whole
+            // transcript: ~60 tokens against thousands, and it still carries
+            // the part the user acts on — which session needs attention.
+            const ctx = injectSessionContext(sessionId, true);
+            if (ctx) sendContext(ctx);
+            const session = storage.getState().sessions[sessionId];
+            sendPrompt(formatCompletionNotice(sessionId, session?.metadata?.summary?.text));
+            return;
+        }
+
+        const ctx = injectSessionContext(sessionId, false);
         if (ctx) sendContext(ctx);
         sendPrompt(formatReadyEvent(sessionId));
     },
@@ -223,9 +304,12 @@ export const voiceHooks = {
      * Called when voice session stops
      */
     onVoiceStopped() {
-        if (VOICE_CONFIG.ENABLE_DEBUG_LOGGING) {
+        if (currentConfig.ENABLE_DEBUG_LOGGING) {
             console.log('🎤 Voice session stopped');
         }
+        // Back to the default tier between sessions so a stopped session leaves
+        // no tier behind for other code paths to observe.
+        currentConfig = VOICE_CONFIG;
         shownSessions.clear();
         pendingPrompts = [];
     }

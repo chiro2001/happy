@@ -9,7 +9,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { storage } from '@/sync/storage';
-import { addQwenVoiceUsage } from '@/sync/persistence';
+import { addQwenVoiceUsage, getVoiceMessageCount } from '@/sync/persistence';
 import { realtimeClientTools } from '../realtimeClientTools';
 import { registerVoiceSession } from '../RealtimeSession';
 import { QwenRealtimeClient } from './client';
@@ -18,6 +18,9 @@ import { QWEN_DEFAULTS } from './types';
 import { isStopCommand } from './stopCommand';
 import type { QwenConfig, QwenUsage } from './types';
 import type { VoiceSession, VoiceSessionConfig } from '../types';
+import { getVoiceConfig, type VoiceContextMode } from '../voiceConfig';
+import { voiceHooks } from '../hooks/voiceHooks';
+import { buildVoiceSystemPrompt } from '../voiceSystemPrompt';
 
 /**
  * Tools the model may call. The names must match `realtimeClientTools` keys —
@@ -63,8 +66,51 @@ const TOOL_DEFINITIONS = [
     },
 ];
 
+/**
+ * The same two tools, described in as few tokens as the model still
+ * understands — for the minimal tier, where the tool block is a large share of
+ * a deliberately small budget. Names and parameter shapes must stay identical:
+ * they are dispatched by name in `onToolCall`.
+ */
+const TOOL_DEFINITIONS_MINIMAL = [
+    {
+        type: 'function',
+        function: {
+            name: 'sendMessageToSession',
+            description: '把用户指令发给编码代理',
+            parameters: {
+                type: 'object',
+                properties: {
+                    sessionId: { type: 'string' },
+                    message: { type: 'string' },
+                },
+                required: ['sessionId', 'message'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'processPermissionRequest',
+            description: '批准或拒绝授权请求',
+            parameters: {
+                type: 'object',
+                properties: {
+                    requestId: { type: 'string' },
+                    decision: { type: 'string', enum: ['allow', 'deny'] },
+                },
+                required: ['requestId', 'decision'],
+            },
+        },
+    },
+];
+
+function toolsForMode(mode: VoiceContextMode | undefined) {
+    return mode === 'minimal' ? TOOL_DEFINITIONS_MINIMAL : TOOL_DEFINITIONS;
+}
+
 /** Turn the shared session config into provider-specific options. */
-function toSessionOptions(config: VoiceSessionConfig) {
+function toSessionOptions(config: VoiceSessionConfig, tools: unknown[]) {
     // The client-side stop-word suppressor handles the common case, but telling
     // the model directly covers phrasings it does not enumerate and avoids
     // generating tokens only to throw them away.
@@ -78,7 +124,7 @@ function toSessionOptions(config: VoiceSessionConfig) {
     return {
         instructions,
         initialContext: config.initialContext,
-        tools: TOOL_DEFINITIONS,
+        tools,
         voice: QWEN_DEFAULTS.voice,
         silenceDurationMs: QWEN_DEFAULTS.silenceDurationMs,
         vadThreshold: QWEN_DEFAULTS.vadThreshold,
@@ -152,6 +198,22 @@ class QwenVoiceSessionImpl implements VoiceSession {
     /** Failsafe for `muteNextResponse`; separate from `suppressTimer` so the
      *  two mechanisms cannot cancel each other's timers. */
     private muteTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Credentials + model, resolved once per session and reused on reconnect. */
+    private qwenConfig: QwenConfig | null = null;
+    /** The config we were started with; the basis for a fresh brief later. */
+    private lastConfig: VoiceSessionConfig | null = null;
+    /** Tool block for the current tier, chosen in `startSession`. */
+    private tools: unknown[] = TOOL_DEFINITIONS;
+    /** Assistant turns completed in the current connection. */
+    private turnCount = 0;
+    /**
+     * Bumped on every connect. Sockets from a previous connection keep firing
+     * their callbacks after a reconnect, and without this guard the old
+     * socket's `onClosed` would tear down the *new* recorder.
+     */
+    private connectionSeq = 0;
+    /** True while a reconnect is in flight, so callbacks can stand down. */
+    private reconnecting = false;
 
     async startSession(config: VoiceSessionConfig): Promise<string | null> {
         const settings = storage.getState().settings;
@@ -177,11 +239,39 @@ class QwenVoiceSessionImpl implements VoiceSession {
         QwenAudioCapture.configureSession();
 
         storage.getState().setRealtimeStatus('connecting');
+        // A second start (user stops and starts again, or the provider swaps)
+        // must not leave the previous socket running: bump the sequence first
+        // so its callbacks cannot disturb the new session, then close it.
+        this.connectionSeq += 1;
+        this.client?.close();
+        this.client = null;
+        this.teardownAudio();
         this.halfDuplex = local.qwenHalfDuplex;
         this.logDeltas = local.qwenLogDeltas;
+        this.lastConfig = config;
+        this.qwenConfig = qwenConfig;
+        // Tools follow the context tier: the minimal tier trades tool
+        // descriptions for budget, so it gets the compressed block.
+        this.tools = toolsForMode(settings.voiceContextMode);
+        this.turnCount = 0;
+
+        this.connectOnce(config);
+        return this.conversationId;
+    }
+
+    /**
+     * Open one connection. Called by `startSession` and again on a context
+     * reset; everything that must not straddle a reconnect is reset here.
+     */
+    private connectOnce(config: VoiceSessionConfig): void {
+        const qwenConfig = this.qwenConfig;
+        if (!qwenConfig) return;
+        const seq = ++this.connectionSeq;
+        const isCurrent = () => this.connectionSeq === seq;
 
         const client = new QwenRealtimeClient(qwenConfig, {
             onReady: () => {
+                if (!isCurrent()) return;
                 storage.getState().setRealtimeStatus('connected');
                 storage.getState().setRealtimeMode('idle');
                 this.connectedAt = Date.now();
@@ -201,6 +291,10 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 });
             },
             onClosed: () => {
+                // A socket superseded by a reconnect must not report a
+                // disconnect: the UI would tear down a session that is in fact
+                // still running.
+                if (!isCurrent()) return;
                 this.flushTimings();
                 this.teardownAudio();
                 storage.getState().setRealtimeStatus('disconnected');
@@ -209,10 +303,12 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 storage.getState().incrementVoiceSessionGeneration();
             },
             onError: (message) => {
+                if (!isCurrent()) return;
                 console.warn('[Qwen voice]', message);
                 storage.getState().setRealtimeStatus('disconnected');
             },
             onUserTranscript: (text) => {
+                if (!isCurrent()) return;
                 this.transcriptAt = Date.now();
                 const asr = this.speechStopAt ? this.transcriptAt - this.speechStopAt : null;
                 console.log(
@@ -309,11 +405,15 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 storage.getState().setRealtimeMode('idle');
             },
             onTurnComplete: () => {
+                if (!isCurrent()) return;
                 this.flushAssistantText();
                 // The suppressed turn is over; later replies are normal again.
                 this.muteNextResponse = false;
+                this.maybeResetContext();
             },
             onUsage: (usage: QwenUsage) => {
+                if (!isCurrent()) return;
+                this.turnCount += 1;
                 // Persisted so the settings screen can show a running total;
                 // the console bill is still the authority on what was charged.
                 const totals = addQwenVoiceUsage({
@@ -337,6 +437,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 );
             },
             onToolCall: async (name, args) => {
+                if (!isCurrent()) return `error (stale connection)`;
                 const tool = (realtimeClientTools as Record<string, unknown>)[name];
                 if (typeof tool !== 'function') {
                     return `error (unknown tool: ${name})`;
@@ -351,11 +452,71 @@ class QwenVoiceSessionImpl implements VoiceSession {
         this.speechStartedAt = null;
         this.speechMs = 0;
         this.timingsFlushed = false;
-        client.connect(toSessionOptions(config));
-        return this.conversationId;
+        client.connect(toSessionOptions(config, this.tools));
+    }
+
+    /**
+     * Reconnect with a fresh brief once the tier's turn budget is spent.
+     *
+     * The server keeps everything it has already been told and re-bills it on
+     * every turn, so a long conversation grows quadratically. Dropping the
+     * transcript is the only way to actually stop paying for it: sending a
+     * summary instead would itself stay in context for good.
+     *
+     * The user hears a short pause and nothing else — the recorder and player
+     * are restarted on the new socket and the UI status never leaves
+     * `connected`.
+     */
+    private maybeResetContext(): void {
+        const limit = getVoiceConfig(storage.getState().settings.voiceContextMode).RESET_AFTER_TURNS;
+        if (limit === null || this.reconnecting || this.turnCount < limit) return;
+        const config = this.lastConfig;
+        if (!config || !this.client) return;
+
+        this.reconnecting = true;
+        console.log(
+            `[Qwen voice] context reset after ${this.turnCount} turns - reconnecting with a fresh brief`,
+        );
+        try {
+            // Rebuild the brief from live state. This also re-reads the tier, so
+            // a setting changed mid-session is honoured from here on.
+            const initialContext = voiceHooks.onVoiceStarted(config.sessionId);
+            const settings = storage.getState().settings;
+            const systemPrompt = buildVoiceSystemPrompt({
+                initialContext,
+                onboardingPromptLoadCount: 0,
+                voiceMessageCount: getVoiceMessageCount(),
+                includePaidVoiceOnboarding: false,
+                contextMode: settings.voiceContextMode,
+            });
+            this.tools = toolsForMode(settings.voiceContextMode);
+
+            this.flushAssistantText();
+            this.flushTimings();
+            this.teardownAudio();
+            // Retire the socket, then let `connectOnce` take the next sequence.
+            // In between, nothing this socket reports can reach the UI.
+            this.connectionSeq += 1;
+            this.client.close();
+            this.client = null;
+
+            this.turnCount = 0;
+            this.suppressPlayback = false;
+            this.muteNextResponse = false;
+            this.lastConfig = { ...config, initialContext, systemPrompt };
+            this.connectOnce(this.lastConfig);
+        } catch (error) {
+            console.warn('[Qwen voice] context reset failed:', error);
+            storage.getState().setRealtimeStatus('disconnected');
+        } finally {
+            this.reconnecting = false;
+        }
     }
 
     async endSession(): Promise<void> {
+        // Retire the current socket before tearing anything down: callbacks
+        // arriving after this point belong to a session that no longer exists.
+        this.connectionSeq += 1;
         if (this.suppressTimer) {
             clearTimeout(this.suppressTimer);
             this.suppressTimer = null;

@@ -1,7 +1,7 @@
 import { Session } from "@/sync/storageTypes";
 import { Message } from "@/sync/typesMessage";
 import { trimIdent } from "@/utils/trimIdent";
-import { VOICE_CONFIG } from "../voiceConfig";
+import { VOICE_CONFIG, type VoiceConfig } from "../voiceConfig";
 
 interface SessionMetadata {
     summary?: { text?: string };
@@ -33,7 +33,10 @@ export function formatPermissionRequest(
 // Message formatting
 //
 
-export function formatMessage(message: Message): string | null {
+export function formatMessage(
+    message: Message,
+    config: VoiceConfig = VOICE_CONFIG,
+): string | null {
 
     // Lines
     let lines: string[] = [];
@@ -41,9 +44,9 @@ export function formatMessage(message: Message): string | null {
         lines.push(`Claude Code: \n<text>${message.text}</text>`);
     } else if (message.kind === 'user-text') {
         lines.push(`User sent message: \n<text>${message.text}</text>`);
-    } else if (message.kind === 'tool-call' && !VOICE_CONFIG.DISABLE_TOOL_CALLS) {
+    } else if (message.kind === 'tool-call' && !config.DISABLE_TOOL_CALLS) {
         const toolDescription = message.tool.description ? ` - ${message.tool.description}` : '';
-        if (VOICE_CONFIG.LIMITED_TOOL_CALLS) {
+        if (config.LIMITED_TOOL_CALLS) {
             if (message.tool.description) {
                 lines.push(`Claude Code is using ${message.tool.name}${toolDescription}`);
             }
@@ -57,27 +60,50 @@ export function formatMessage(message: Message): string | null {
     return lines.join('\n\n');
 }
 
-export function formatNewSingleMessage(sessionId: string, message: Message): string | null {
-    let formatted = formatMessage(message);
+export function formatNewSingleMessage(
+    sessionId: string,
+    message: Message,
+    config: VoiceConfig = VOICE_CONFIG,
+): string | null {
+    let formatted = formatMessage(message, config);
     if (!formatted) {
         return null;
     }
     return 'New message in session: ' + sessionId + '\n\n' + formatted;
 }
 
-export function formatNewMessages(sessionId: string, messages: Message[]): string | null {
-    let formatted = [...messages].sort((a, b) => a.createdAt - b.createdAt).map(formatMessage).filter(Boolean);
+export function formatNewMessages(
+    sessionId: string,
+    messages: Message[],
+    config: VoiceConfig = VOICE_CONFIG,
+): string | null {
+    let formatted = [...messages]
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map((m) => formatMessage(m, config))
+        .filter(Boolean);
     if (formatted.length === 0) {
         return null;
     }
     return 'New messages in session: ' + sessionId + '\n\n' + formatted.join('\n\n');
 }
 
-export function formatHistory(sessionId: string, messages: Message[]): string {
-    let messagesToFormat = VOICE_CONFIG.MAX_HISTORY_MESSAGES > 0
-        ? messages.slice(0, VOICE_CONFIG.MAX_HISTORY_MESSAGES)
-        : messages;
-    let formatted = messagesToFormat.map(formatMessage).filter(Boolean);
+export function formatHistory(
+    sessionId: string,
+    messages: Message[],
+    config: VoiceConfig = VOICE_CONFIG,
+): string | null {
+    // 0 means "no history at all" (the minimal tier); negative means "all of
+    // it" (the pre-tier behaviour); positive is a cap.
+    const limit = config.MAX_HISTORY_MESSAGES;
+    let messagesToFormat = limit === 0
+        ? []
+        : limit > 0
+            ? messages.slice(0, limit)
+            : messages;
+    let formatted = messagesToFormat.map((m) => formatMessage(m, config)).filter(Boolean);
+    if (formatted.length === 0) {
+        return null;
+    }
     return 'History of messages in session: ' + sessionId + '\n\n' + formatted.join('\n\n');
 }
 
@@ -85,7 +111,11 @@ export function formatHistory(sessionId: string, messages: Message[]): string {
 // Session states
 //
 
-export function formatSessionFull(session: Session, messages: Message[]): string {
+export function formatSessionFull(
+    session: Session,
+    messages: Message[],
+    config: VoiceConfig = VOICE_CONFIG,
+): string {
     const sessionName = session.metadata?.summary?.text;
     const sessionPath = session.metadata?.path;
     const lines: string[] = [];
@@ -102,12 +132,35 @@ export function formatSessionFull(session: Session, messages: Message[]): string
         lines.push('');
     }
 
-    // Add history
-    lines.push('## Our interaction history so far');
-    lines.push('');
-    lines.push(formatHistory(session.id, messages));
+    // Add history — omitted entirely in the tiers that carry none, so the
+    // prompt does not end on an empty section.
+    const history = formatHistory(session.id, messages, config);
+    if (history) {
+        lines.push('## Our interaction history so far');
+        lines.push('');
+        lines.push(history);
+    }
 
     return lines.join('\n\n');
+}
+
+/**
+ * A background session finished something — say so, cheaply.
+ *
+ * ~60 tokens versus the thousands a message body costs, and it carries the
+ * part the user actually acts on: which session wants attention. The
+ * assistant can ask that session for detail if the user wants it.
+ */
+export function formatCompletionNotice(
+    sessionId: string,
+    summary?: string | null,
+): string {
+    const label = summary?.trim() ? ` "${summary.trim()}"` : '';
+    return (
+        `Background session finished working: ${sessionId}${label}. `
+        + `Report this to the user in one short sentence. `
+        + `Do not read its output aloud unless asked.`
+    );
 }
 
 export function formatSessionOffline(sessionId: string, metadata?: SessionMetadata): string {

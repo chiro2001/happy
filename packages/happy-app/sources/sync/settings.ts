@@ -70,6 +70,12 @@ export const SettingsSchema = z.object({
     qwenRegion: z.string().describe('DashScope region: cn-beijing or ap-southeast-1'),
     qwenModel: z.string().describe('Realtime model id'),
     qwenVoice: z.string().describe('Output voice name'),
+    // How much of the coding agents' output the voice assistant carries.
+    // Everything in a realtime session's context is re-billed every turn, so
+    // this is a recurring cost setting, not a cosmetic one. Defaults to the
+    // pre-tier behaviour ('full') so an update never silently changes what the
+    // assistant can see.
+    voiceContextMode: z.enum(['minimal', 'lite', 'full']).describe('Voice assistant context tier: minimal, lite, or full'),
     preferredLanguage: z.string().nullable().describe('Preferred UI language (null for auto-detect from device locale)'),
     recentMachinePaths: z.array(z.object({
         machineId: z.string(),
@@ -152,6 +158,7 @@ export const settingsDefaults: Settings = {
     qwenRegion: 'cn-beijing',
     qwenModel: 'qwen3.8-omni-flash-realtime',
     qwenVoice: 'Tina',
+    voiceContextMode: 'full',
     preferredLanguage: null,
     recentMachinePaths: [],
     lastUsedAgent: null,
