@@ -111,6 +111,16 @@ function agentNameFor(sessionId: string): string {
  */
 function sendCurrentSession(sessionId: string) {
     const summary = storage.getState().sessions[sessionId]?.metadata?.summary?.text;
+    // Logged unconditionally, unlike the other hooks. This is the one update
+    // whose loss breaks message routing, and the tier with the tightest budget
+    // is the one that switches general logging off — which made an earlier
+    // round of diagnosis impossible: the behaviour could not be observed
+    // without editing the code.
+    console.log(
+        '🎤 Voice: current session →',
+        sessionId,
+        summary ? `("${summary}")` : '',
+    );
     sendContext(formatCurrentSession(sessionId, summary));
 }
 

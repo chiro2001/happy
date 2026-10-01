@@ -23,7 +23,14 @@ export const realtimeClientTools = {
      */
     sendMessageToSession: async (parameters: unknown) => {
         const schema = z.object({
-            sessionId: z.string().min(1),
+            // Optional on purpose. The common case is "send this to the session
+            // I am looking at", and that is a fact the client already has.
+            // Requiring the model to recall and reproduce an opaque id for it
+            // put a memory test in the middle of the most frequent path — and
+            // when it lost that test it passed a *valid* id belonging to an
+            // earlier session, which no validation can catch, and the message
+            // was delivered to the wrong window.
+            sessionId: z.string().min(1).optional(),
             message: z.string().min(1)
         });
         const parsed = schema.safeParse(parameters);
@@ -34,29 +41,50 @@ export const realtimeClientTools = {
         }
 
         const { message } = parsed.data;
-        let { sessionId } = parsed.data;
+        const sessions = storage.getState().sessions;
+        const focused = getCurrentRealtimeSessionId();
+        const focusedIsUsable = Boolean(focused && sessions[focused]);
 
-        // A session id that is not one of ours means the model invented it or
-        // is working from a stale picture of the session list. Falling back to
-        // the focused session is the right repair: the user's instruction was
-        // meant for the session they are looking at. The alternative — refusing
-        // — loses the instruction, and the previous behaviour of sending to
-        // whatever id came back is how a message ended up in the wrong window.
-        if (!storage.getState().sessions[sessionId]) {
-            const focused = getCurrentRealtimeSessionId();
-            console.warn(
-                '📤 sendMessageToSession: unknown session',
-                sessionId,
-                focused ? `→ falling back to focused ${focused}` : '→ no focused session',
-            );
-            if (!focused || !storage.getState().sessions[focused]) {
+        // Where it goes, and why. Logged unconditionally: this path decides
+        // whether an instruction reaches the window the user meant, and the
+        // tier that had the most trouble here is also the one that turns
+        // general logging off — which is exactly when it needs to be visible.
+        let target = parsed.data.sessionId;
+        let reason = 'named by the assistant';
+
+        if (!target) {
+            if (!focusedIsUsable) {
+                console.warn('📤 sendMessageToSession: nothing named and no current session');
+                return "error (no current session; ask the user which session to use)";
+            }
+            target = focused!;
+            reason = 'current session (none named)';
+        } else if (!sessions[target]) {
+            // Not one of ours: invented, or carried over from a stale picture.
+            // The instruction was still meant for the session the user is
+            // looking at, so send it there rather than lose it.
+            if (!focusedIsUsable) {
+                console.warn('📤 sendMessageToSession: unknown id and no current session:', target);
                 return "error (that session is not available; ask the user which session to use)";
             }
-            sessionId = focused;
+            reason = `unknown id ${target} → current session`;
+            target = focused!;
+        } else if (target !== focused) {
+            // Legitimate — the user may have named another session — but it is
+            // also exactly what a stale id looks like, so leave a line that
+            // tells the two apart after the fact.
+            reason = `targeted explicitly (current session is ${focused ?? 'none'})`;
         }
 
-        console.log('📤 Sending message to session:', sessionId);
-        await sync.sendMessage(sessionId, message, { source: 'voice' });
+        const summary = sessions[target]?.metadata?.summary?.text?.trim();
+        console.log(
+            '📤 sendMessageToSession:',
+            target,
+            summary ? `("${summary}")` : '',
+            `· ${reason}`,
+        );
+
+        await sync.sendMessage(target, message, { source: 'voice' });
         incrementVoiceMessageCount();
         const voiceMessageCount = getVoiceMessageCount();
         if (isVoiceSessionStarted()) {
@@ -65,7 +93,10 @@ export const realtimeClientTools = {
                 `- voice_message_count: ${voiceMessageCount}`,
             ].join('\n'));
         }
-        return "sent [DO NOT say anything else, simply say 'sent']";
+        // Naming the destination costs a couple of tokens and gives the model
+        // the one piece of evidence it would need to notice a misdelivery.
+        const where = summary ? `"${summary}"` : target;
+        return `sent to ${where} [DO NOT say anything else, simply say 'sent']`;
     },
 
     /**

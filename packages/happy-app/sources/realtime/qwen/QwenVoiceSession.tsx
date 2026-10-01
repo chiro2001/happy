@@ -34,14 +34,20 @@ const TOOL_DEFINITIONS = [
             name: 'sendMessageToSession',
             description:
                 '把用户的指令发送给正在运行的编码代理。' +
-                '当用户要求转达、询问或指示代理做事时调用。',
+                '当用户要求转达、询问或指示代理做事时调用。' +
+                '除非用户明确点名了别的会话，否则不要填 sessionId —— ' +
+                '省略表示发到当前会话，比凭记忆填 id 可靠。',
             parameters: {
                 type: 'object',
                 properties: {
-                    sessionId: { type: 'string', description: '目标会话 id' },
+                    sessionId: {
+                        type: 'string',
+                        description: '目标会话 id。用户明确点名其他会话时才填；默认省略。',
+                    },
                     message: { type: 'string', description: '要发送的文本' },
                 },
-                required: ['sessionId', 'message'],
+                // sessionId is deliberately not required: see the description.
+                required: ['message'],
             },
         },
     },
@@ -77,14 +83,14 @@ const TOOL_DEFINITIONS_MINIMAL = [
         type: 'function',
         function: {
             name: 'sendMessageToSession',
-            description: '把用户指令发给编码代理',
+            description: '把用户指令发给编码代理；省略 sessionId 表示当前会话',
             parameters: {
                 type: 'object',
                 properties: {
                     sessionId: { type: 'string' },
                     message: { type: 'string' },
                 },
-                required: ['sessionId', 'message'],
+                required: ['message'],
             },
         },
     },
