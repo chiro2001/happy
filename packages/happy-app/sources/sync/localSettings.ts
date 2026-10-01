@@ -25,6 +25,25 @@ export const LocalSettingsSchema = z.object({
     expandedProjects: z.record(z.string(), z.boolean()).describe('Projects showing all workspaces instead of the first few'),
     // Boxes ticked on the "Link your computer" checklist - keyed by step id
     linkComputerChecklist: z.record(z.string(), z.boolean()).describe('Ticked steps on the link-your-computer checklist'),
+    // ── Qwen voice: device-local by design ────────────────────────────────
+    // The account settings blob is uploaded to /v1/account/settings, so the
+    // credential and anything that only makes sense on one device belong here.
+    qwenApiKey: z.string().nullable().describe('DashScope API key. Never leaves the device.'),
+    qwenWorkspaceId: z.string().nullable().describe('Bailian workspace id, used as the WebSocket host prefix'),
+    /**
+     * Mute the microphone while the assistant speaks.
+     *
+     * Off by default: the Android recorder is patched to use the
+     * VOICE_COMMUNICATION input preset, so the system echo canceller removes
+     * the assistant's voice from the mic feed and voice barge-in works. Turn
+     * this on for devices whose AEC is too weak — it guarantees no self-echo
+     * at the cost of not being able to interrupt by speaking.
+     *
+     * Device-local because AEC quality varies by device, not by account.
+     */
+    qwenHalfDuplex: z.boolean().describe('Mute mic during playback (disables voice barge-in)'),
+    /** Log every assistant text delta instead of one line per turn. */
+    qwenLogDeltas: z.boolean().describe('Verbose voice logging: one line per assistant delta'),
 });
 
 //
@@ -55,6 +74,10 @@ export const localSettingsDefaults: LocalSettings = {
     acknowledgedCliVersions: {},
     expandedProjects: {},
     linkComputerChecklist: {},
+    qwenApiKey: null,
+    qwenWorkspaceId: null,
+    qwenHalfDuplex: false,
+    qwenLogDeltas: false,
 };
 Object.freeze(localSettingsDefaults);
 

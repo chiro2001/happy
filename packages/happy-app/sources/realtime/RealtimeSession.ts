@@ -47,6 +47,44 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
     }
 
     try {
+        // ── Qwen-Omni-Realtime: a separate provider with its own billing ──
+        // It talks straight to DashScope with a device-local key, so none of
+        // the Happy-server credential/paywall flow below applies. Returning
+        // early keeps that path completely untouched.
+        const { voiceProvider } = storage.getState().settings;
+        // The credential and workspace id are device-local: the account
+        // settings blob is uploaded to the server, so secrets must not live
+        // there (see sync/localSettings.ts).
+        const { qwenApiKey, qwenWorkspaceId } = storage.getState().localSettings;
+        if (voiceProvider === 'qwen') {
+            if (!qwenApiKey || !qwenWorkspaceId) {
+                storage.getState().setRealtimeStatus('disconnected');
+                Modal.alert(
+                    t('common.error'),
+                    '请先在「设置 → 语音助手」填写 DashScope API Key 和业务空间 ID。',
+                );
+                return null;
+            }
+
+            currentSessionId = sessionId;
+            const systemPrompt = buildVoiceSystemPrompt({
+                initialContext,
+                onboardingPromptLoadCount: 0,
+                voiceMessageCount: getVoiceMessageCount(),
+                includePaidVoiceOnboarding: false,
+            });
+
+            const conversationId = await voiceSession.startSession({
+                sessionId,
+                initialContext,
+                systemPrompt,
+            });
+            currentVoiceConversationId = conversationId;
+            currentVoiceSessionStartedAt = Date.now();
+            voiceSessionStarted = true;
+            return conversationId;
+        }
+
         // Bypass Happy server token — only when user has their own custom agent
         const { voiceBypassToken, voiceCustomAgentId } = storage.getState().settings;
         if (voiceBypassToken && voiceCustomAgentId) {

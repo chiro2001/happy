@@ -5,6 +5,7 @@ import { LocalSettings, localSettingsDefaults, localSettingsParse } from './loca
 import { Purchases, purchasesDefaults, purchasesParse } from './purchases';
 import { Profile, profileDefaults, profileParse } from './profile';
 import type { PermissionModeKey } from '@/components/PermissionModeSelector';
+import { EMPTY_QWEN_USAGE, type QwenUsageTotals } from '@/realtime/qwen/pricing';
 
 const mmkv = new MMKV();
 const NEW_SESSION_DRAFT_KEY = 'new-session-draft-v1';
@@ -12,6 +13,8 @@ const REGISTERED_PUSH_TOKEN_KEY = 'registered-push-token-v1';
 const VOICE_SOFT_PAYWALL_SHOWN_KEY = 'voice-soft-paywall-shown';
 const VOICE_ONBOARDING_PROMPT_LOAD_COUNT_KEY = 'voice-onboarding-prompt-load-count';
 const VOICE_MESSAGE_COUNT_KEY = 'voice-message-count';
+/** Cumulative Qwen voice usage, so the cost screen survives restarts. */
+const QWEN_VOICE_USAGE_KEY = 'qwen-voice-usage-v1';
 
 export type NewSessionAgentType = 'claude' | 'codex' | 'gemini' | 'openclaw' | 'agy' | 'rig';
 export type NewSessionSessionType = 'simple' | 'worktree';
@@ -325,6 +328,46 @@ export function getVoiceMessageCount(): number {
 
 export function incrementVoiceMessageCount() {
     mmkv.set(VOICE_MESSAGE_COUNT_KEY, getVoiceMessageCount() + 1);
+}
+
+// ── Qwen voice usage ──────────────────────────────────────────────────────
+// Accumulated locally so the settings screen can show what this device has
+// spent. The Bailian console remains the source of truth for billing; this is
+// a running estimate and counts only what this device sent.
+
+export function getQwenVoiceUsage(): QwenUsageTotals {
+    const raw = mmkv.getString(QWEN_VOICE_USAGE_KEY);
+    if (!raw) return { ...EMPTY_QWEN_USAGE };
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return { ...EMPTY_QWEN_USAGE };
+        // Spread over the defaults so a schema change cannot yield undefined.
+        return { ...EMPTY_QWEN_USAGE, ...parsed };
+    } catch {
+        return { ...EMPTY_QWEN_USAGE };
+    }
+}
+
+export function addQwenVoiceUsage(
+    delta: Omit<QwenUsageTotals, 'updatedAt'>,
+): QwenUsageTotals {
+    const current = getQwenVoiceUsage();
+    const next: QwenUsageTotals = {
+        inputAudioTokens: current.inputAudioTokens + delta.inputAudioTokens,
+        inputTextTokens: current.inputTextTokens + delta.inputTextTokens,
+        outputAudioTokens: current.outputAudioTokens + delta.outputAudioTokens,
+        outputTextTokens: current.outputTextTokens + delta.outputTextTokens,
+        turnCount: current.turnCount + delta.turnCount,
+        connectionMs: current.connectionMs + delta.connectionMs,
+        speechMs: current.speechMs + delta.speechMs,
+        updatedAt: Date.now(),
+    };
+    mmkv.set(QWEN_VOICE_USAGE_KEY, JSON.stringify(next));
+    return next;
+}
+
+export function resetQwenVoiceUsage() {
+    mmkv.delete(QWEN_VOICE_USAGE_KEY);
 }
 
 export function getVoiceLocalCounters() {

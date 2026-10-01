@@ -59,6 +59,17 @@ export const SettingsSchema = z.object({
     voiceAssistantLanguage: z.string().nullable().describe('Preferred language for voice assistant (null for auto-detect)'),
     voiceCustomAgentId: z.string().nullable().describe('Custom ElevenLabs agent ID (null to use Happy default)'),
     voiceBypassToken: z.boolean().describe('Bypass Happy server token and connect directly to ElevenLabs (requires custom agent ID)'),
+    // ── Qwen-Omni-Realtime: an additional voice provider ──────────────────
+    // Additive to the ElevenLabs settings above. None of these are read unless
+    // voiceProvider is 'qwen'.
+    //
+    // Anything device-specific or secret lives in LocalSettings instead: the
+    // whole Settings object is uploaded (encrypted) to /v1/account/settings, so
+    // an API key here would leave the device.
+    voiceProvider: z.enum(['elevenlabs', 'qwen']).describe('Which realtime voice backend to use'),
+    qwenRegion: z.string().describe('DashScope region: cn-beijing or ap-southeast-1'),
+    qwenModel: z.string().describe('Realtime model id'),
+    qwenVoice: z.string().describe('Output voice name'),
     preferredLanguage: z.string().nullable().describe('Preferred UI language (null for auto-detect from device locale)'),
     recentMachinePaths: z.array(z.object({
         machineId: z.string(),
@@ -137,6 +148,10 @@ export const settingsDefaults: Settings = {
     voiceAssistantLanguage: null,
     voiceCustomAgentId: null,
     voiceBypassToken: false,
+    voiceProvider: 'elevenlabs',
+    qwenRegion: 'cn-beijing',
+    qwenModel: 'qwen3.8-omni-flash-realtime',
+    qwenVoice: 'Tina',
     preferredLanguage: null,
     recentMachinePaths: [],
     lastUsedAgent: null,
