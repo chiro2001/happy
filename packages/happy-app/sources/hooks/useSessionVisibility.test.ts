@@ -15,9 +15,15 @@ vi.mock('@/sync/sync', () => ({ sync: { onSessionVisible: mocks.onSessionVisible
 
 import { useSessionVisibility } from './useSessionVisibility';
 
-type Props = { id: string; active: boolean; embedded?: boolean; realtimeStatus?: string };
-function Harness({ id, active, embedded = false, realtimeStatus = 'disconnected' }: Props) {
-    useSessionVisibility(id, active, embedded, realtimeStatus);
+/**
+ * `voiceStatus` is deliberately inert: it is not passed to the hook. It exists
+ * so a test can force a re-render with changed props and prove that re-rendering
+ * an inactive preload does not activate it — which used to be asserted through
+ * the voice status being a hook dependency.
+ */
+type Props = { id: string; active: boolean; embedded?: boolean; voiceStatus?: string };
+function Harness({ id, active, embedded = false }: Props) {
+    useSessionVisibility(id, active, embedded);
     return null;
 }
 let renderer: ReturnType<typeof create>;
@@ -53,9 +59,9 @@ describe('session visibility lifecycle', () => {
         expect(mocks.state.currentViewingSessionId).toBe('a');
     });
 
-    it('does not activate an abandoned preload even when voice status changes', () => {
+    it('does not activate an abandoned preload when its props change', () => {
         render({ id: 'a', active: false });
-        update({ id: 'a', active: false, realtimeStatus: 'connected' });
+        update({ id: 'a', active: false, voiceStatus: 'connected' });
         expect(mocks.onSessionVisible).not.toHaveBeenCalled();
         expect(mocks.setCurrentViewingSession).not.toHaveBeenCalled();
     });

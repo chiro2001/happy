@@ -51,6 +51,7 @@ import { log } from '@/log';
 import { gitStatusSync } from './gitStatusSync';
 import { AsyncLock } from '@/utils/lock';
 import { voiceHooks } from '@/realtime/hooks/voiceHooks';
+import { shouldClaimVoiceFocus } from '@/realtime/voiceConfig';
 import { Message } from './typesMessage';
 import { EncryptionCache } from './encryption/encryptionCache';
 import { systemPrompt } from './prompt/systemPrompt';
@@ -378,9 +379,29 @@ class Sync {
 
     private notifyVoiceSessionFocus = (sessionId: string) => {
         const session = storage.getState().sessions[sessionId];
-        if (session) {
-            voiceHooks.onSessionFocus(sessionId, session.metadata || undefined);
+        if (!session) return;
+
+        // Voice focus means "the session the user is looking at", so only that
+        // session may claim it. `onSessionVisible` is a data-freshness signal —
+        // it also fires for preloads, refreshes and embedded views — and
+        // treating every call as a focus change is what let a background
+        // session capture the routing target.
+        //
+        // A null `currentViewingSessionId` means the app does not have a claim
+        // on any session (the list is showing, or a detail screen is on top),
+        // so nothing is known and nothing is overruled.
+        const viewing = storage.getState().currentViewingSessionId;
+        if (!shouldClaimVoiceFocus(viewing, sessionId)) {
+            console.log(
+                '🎤 Voice: ignoring visibility for a session the user is not viewing',
+                sessionId,
+                '· viewing:',
+                viewing,
+            );
+            return;
         }
+
+        voiceHooks.onSessionFocus(sessionId, session.metadata || undefined);
     }
 
     private refreshSessionData = (sessionId: string) => {
@@ -392,9 +413,21 @@ class Sync {
 
     private onSessionDataUpdated = (sessionId: string) => {
         this.refreshSessionData(sessionId);
-        // Preserve existing voice-follow behavior for actual server events.
-        // Unlike a user visit, these must not opt a session into full history.
-        this.notifyVoiceSessionFocus(sessionId);
+        // Deliberately does NOT move the voice session's focus.
+        //
+        // This used to, to preserve an older "voice follows whichever session
+        // is active" behaviour. But the contract now is that a message goes to
+        // the session the user is *looking at*, and following output breaks
+        // exactly that: the moment a background session produced anything, it
+        // became the routing target, and the user's next instruction was
+        // delivered into a window they were not reading. Observed in a captured
+        // session as the voice focus oscillating between two sessions every few
+        // seconds, each hop 4-11 ms behind an arriving message.
+        //
+        // Background sessions are not lost by this: their output still reaches
+        // the assistant through the ordinary message and ready-event paths, and
+        // in the cheap tiers it arrives as a completion notice — which is the
+        // intended design, not a fallback.
     }
 
     preloadSession = (sessionId: string) => {

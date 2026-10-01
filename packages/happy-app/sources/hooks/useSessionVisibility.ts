@@ -9,7 +9,7 @@ import { sync } from '@/sync/sync';
  * the press, but there is nothing to tell the server anyone is reading until
  * the machine has answered with a session.
  */
-export function useSessionVisibility(sessionId: string | null, active: boolean, embedded: boolean, realtimeStatus: string) {
+export function useSessionVisibility(sessionId: string | null, active: boolean, embedded: boolean) {
     const claimedView = React.useRef(false);
     React.useLayoutEffect(() => {
         if (!active || !sessionId) return;
@@ -18,7 +18,13 @@ export function useSessionVisibility(sessionId: string | null, active: boolean, 
             storage.getState().setCurrentViewingSession(sessionId);
         }
         sync.onSessionVisible(sessionId);
-    }, [sessionId, active, embedded, realtimeStatus]);
+        // `realtimeStatus` used to be a dependency here, from a time when the
+        // voice session's state was the only signal that the data socket might
+        // have missed messages. It tracks the voice session rather than the
+        // data socket, so it never did what that comment claimed; all it
+        // achieved was re-invalidating the message and git-status syncs every
+        // time the microphone was toggled.
+    }, [sessionId, active, embedded]);
 
     // Keep the existing ownership while a session's info/files/changes screen
     // sits above it. Only release on unmount, and only if this instance ever

@@ -1120,7 +1120,7 @@ export function SessionViewLoaded({
         isMicActive: false,
     }), [handleMicrophonePress, voiceSessionActive]);
 
-    useSessionVisibility(sessionId, active, embedded, realtimeStatus);
+    useSessionVisibility(sessionId, active, embedded);
 
     let content = session ? (
         <>

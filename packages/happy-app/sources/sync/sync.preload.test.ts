@@ -370,13 +370,25 @@ describe('chat preload sync integration', () => {
         expect(engine.sessionLastSeq.has('a')).toBe(false);
     });
 
-    it('server events preserve voice-follow without claiming a visit or fetching all history', async () => {
+    it('server events refresh data without moving the voice focus', async () => {
         mocks.request.mockResolvedValue(response([message()], true));
         const older = vi.spyOn(engine, 'loadOlderMessages');
         engine.onSessionDataUpdated('a');
         await engine.getMessagesSync('a').awaitQueue();
-        expect(mocks.voiceFocus).toHaveBeenCalledWith('a', {});
+
+        // These two are the part that must not change: a server event is a
+        // refresh, not a visit, so it neither claims the session for the user
+        // nor drags in the whole history.
         expect(mocks.state.currentViewingSessionId).toBeNull();
         expect(older).not.toHaveBeenCalled();
+
+        // And this is the part that had to change. A server event used to move
+        // the voice focus to whichever session produced output, from an era
+        // when the assistant followed the active session. Now that a message
+        // goes to the session the user is reading, following output delivers
+        // it into the wrong window — a captured session showed the focus
+        // oscillating between two sessions every few seconds, each hop 4-11 ms
+        // behind an arriving message.
+        expect(mocks.voiceFocus).not.toHaveBeenCalled();
     });
 });

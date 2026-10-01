@@ -148,6 +148,25 @@ export function shouldInjectMessageBody(config: VoiceConfig, background: boolean
     return !(background && config.REPORT_ONLY_BACKGROUND);
 }
 
+/**
+ * Whether a session may become the assistant's routing target.
+ *
+ * Focus means "the session the user is looking at", and the only evidence for
+ * that is the app's own record of the session on screen. Visibility reports are
+ * not that evidence: they also fire for preloads, refreshes and embedded
+ * previews, so a background session that merely produced output could claim
+ * focus and receive the user's next instruction.
+ *
+ * A null viewing session means the app has no claim at all — the list is
+ * showing, or a detail screen is on top — so nothing is overruled.
+ */
+export function shouldClaimVoiceFocus(
+    viewingSessionId: string | null,
+    sessionId: string,
+): boolean {
+    return viewingSessionId === null || viewingSessionId === sessionId;
+}
+
 /** Whether a finished turn in this session is announced rather than read out. */
 export function shouldAnnounceCompletion(config: VoiceConfig, background: boolean): boolean {
     return background && config.REPORT_ONLY_BACKGROUND;

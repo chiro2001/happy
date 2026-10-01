@@ -4,6 +4,7 @@ import {
     getVoiceConfig,
     isBackgroundSession,
     shouldAnnounceCompletion,
+    shouldClaimVoiceFocus,
     shouldInjectMessageBody,
     VOICE_CONFIGS,
     type VoiceContextMode,
@@ -89,6 +90,25 @@ describe('voice context tiers', () => {
             expect(isBackgroundSession(null, OTHER_ID)).toBe(false);
             expect(isBackgroundSession(SESSION_ID, SESSION_ID)).toBe(false);
             expect(isBackgroundSession(SESSION_ID, OTHER_ID)).toBe(true);
+        });
+
+        /**
+         * The assistant's routing target is the session the user is looking
+         * at, and nothing else may claim it. A captured session showed the
+         * focus oscillating between two sessions every few seconds, each hop
+         * 4-11 ms behind an arriving message: a background session was
+         * capturing the target simply by producing output, so the user's next
+         * instruction was delivered into a window they were not reading.
+         */
+        it('lets only the session on screen claim voice focus', () => {
+            expect(shouldClaimVoiceFocus(SESSION_ID, OTHER_ID)).toBe(false);
+            expect(shouldClaimVoiceFocus(SESSION_ID, SESSION_ID)).toBe(true);
+        });
+
+        it('does not overrule anything when no session is on screen', () => {
+            // The list is showing, or a detail screen is on top; the app has no
+            // claim, so a report about a session is the best evidence there is.
+            expect(shouldClaimVoiceFocus(null, OTHER_ID)).toBe(true);
         });
 
         it('transcribes the background session only in the full tier', () => {
