@@ -263,6 +263,46 @@ function pickCallId(message: Record<string, unknown>): string {
     return randomUUID();
 }
 
+/**
+ * How much of a command's output travels to the app.
+ *
+ * The ceiling is not a display preference, it is the transport: messages reach
+ * clients as socket.io frames, and the server advertises `maxPayload: 1000000`.
+ * A single oversized envelope therefore does not degrade into "a long message"
+ * — it fails to send at all, taking the tool result *and* everything queued
+ * behind it with it. Some of the commands this session has run (profiler dumps,
+ * `find` over a tree) comfortably exceed that.
+ *
+ * 64 KB is ~1500 lines of terminal text, which is past what the detail screen
+ * can show at once and well inside the frame budget once encryption and base64
+ * are accounted for. The tail is kept rather than the head: when a command
+ * fails, the reason is at the end.
+ */
+const MAX_COMMAND_RESULT_CHARS = 64 * 1024;
+
+/**
+ * The `result`/`isError` pair for a finished command, or nothing when the
+ * command produced no output — an omitted field and an empty string render
+ * identically, and omitting it keeps the frame small for the common case of a
+ * command whose only effect was a side effect.
+ */
+function formatCommandResult(message: Record<string, unknown>): { result?: string; isError?: boolean } {
+    const raw = message.output;
+    const exitCode = message.exit_code;
+    const isError = typeof exitCode === 'number' && exitCode !== 0;
+
+    if (typeof raw !== 'string' || raw.length === 0) {
+        return isError ? { isError } : {};
+    }
+
+    const text = raw.length > MAX_COMMAND_RESULT_CHARS
+        ? `[…${raw.length - MAX_COMMAND_RESULT_CHARS} characters omitted…]\n`
+            + raw.slice(raw.length - MAX_COMMAND_RESULT_CHARS)
+        : raw;
+
+    return { result: text, ...(isError ? { isError } : {}) };
+}
+
 function pickString(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim().length > 0
         ? value.trim()
@@ -1267,7 +1307,17 @@ function mapCodexMcpMessageToSessionEnvelopesInner(message: Record<string, unkno
         const call = pickCallId(message);
         const envelopes: SessionEnvelope[] = [];
         maybeEmitSubagentStart(subagent, opts, startedSubagents, activeSubagents, subagentTitles, envelopes);
-        envelopes.push(createEnvelope('agent', { t: 'tool-call-end', call }, opts));
+        // Carry the command's output through to the app. It used to be dropped
+        // here, and the drop was invisible: the envelope still closed the tool
+        // call, so the card stopped spinning and the app rendered its
+        // "completed with no output" state for a command that had printed
+        // plenty. The app has read `result` off this event all along; nothing
+        // wrote it, and the wire schema stripped it even if something had.
+        envelopes.push(createEnvelope('agent', {
+            t: 'tool-call-end',
+            call,
+            ...formatCommandResult(message),
+        }, opts));
         return {
             currentTurnId: state.currentTurnId,
             startedSubagents,

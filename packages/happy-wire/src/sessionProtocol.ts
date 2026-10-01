@@ -54,6 +54,30 @@ export const sessionToolCallStartEventSchema = z.object({
 export const sessionToolCallEndEventSchema = z.object({
   t: z.literal('tool-call-end'),
   call: z.string(),
+  /**
+   * The tool's output, as text.
+   *
+   * Optional, and its absence is meaningful: a tool that ran and produced
+   * nothing omits this, while a tool that has not finished has no
+   * `tool-call-end` at all. The app renders the missing case as "no output",
+   * so a producer that has output must send it here or the user sees the tool
+   * report silence — which is what happened for every Codex command until this
+   * field was carried through (the app has read it for as long as it has parsed
+   * envelopes; nothing ever wrote it, and this schema stripped it anyway).
+   *
+   * Kept as a string rather than a `{stdout, stderr}` pair because the wire
+   * carries what the agent reported, and agents differ in whether they separate
+   * the two. The app's `getTerminalToolResult` still understands a structured
+   * object for producers that have one, so this is the narrow case, not a
+   * constraint on the rest.
+   *
+   * Bounded by the producer, not here: socket.io caps a frame at 1 MB, so an
+   * unbounded command output would break the sync channel rather than merely
+   * being large.
+   */
+  result: z.string().optional(),
+  /** True when the tool failed, so the app can style the result as an error. */
+  isError: z.boolean().optional(),
 });
 
 export const sessionFileEventSchema = z.object({

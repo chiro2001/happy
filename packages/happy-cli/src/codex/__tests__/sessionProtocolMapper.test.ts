@@ -459,6 +459,73 @@ describe('mapCodexMcpMessageToSessionEnvelopes', () => {
         }
     });
 
+    /**
+     * The app has read `result` off `tool-call-end` all along, but nothing wrote
+     * it, so every command rendered as "[Command completed with no output]" no
+     * matter what it printed. It is easy to lose again: the field is optional,
+     * the envelope still closes the tool call without it, and the wire schema
+     * silently strips unknown keys — which is exactly how it went missing.
+     */
+    it('carries a finished command\u2019s output to the app', () => {
+        const result = mapCodexMcpMessageToSessionEnvelopes(
+            {
+                type: 'exec_command_end',
+                call_id: 'call-1',
+                output: 'HEALTH_OK\nhealth=200\n',
+                exit_code: 0,
+            },
+            { currentTurnId: 'turn-1' }
+        );
+
+        expect(result.envelopes).toHaveLength(1);
+        expect(result.envelopes[0].ev).toMatchObject({
+            t: 'tool-call-end',
+            call: 'call-1',
+            result: 'HEALTH_OK\nhealth=200\n',
+        });
+        // A clean exit must not be flagged as an error — the app styles the
+        // result from this, not from the text.
+        expect(result.envelopes[0].ev).not.toHaveProperty('isError');
+    });
+
+    it('flags a non-zero exit without inventing output', () => {
+        const result = mapCodexMcpMessageToSessionEnvelopes(
+            { type: 'exec_command_end', call_id: 'call-1', output: '', exit_code: 127 },
+            { currentTurnId: 'turn-1' }
+        );
+
+        expect(result.envelopes[0].ev).toMatchObject({
+            t: 'tool-call-end',
+            call: 'call-1',
+            isError: true,
+        });
+        // No output is omitted rather than sent as '', so the frame stays small
+        // and the app's empty-output path is reached the same way either way.
+        expect(result.envelopes[0].ev).not.toHaveProperty('result');
+    });
+
+    /**
+     * socket.io caps a frame at 1 MB, so an unbounded result would break the
+     * sync channel rather than merely being large. The tail is what is kept:
+     * when a command fails, the reason is at the end.
+     */
+    it('bounds a huge command output and keeps its tail', () => {
+        const noise = 'x'.repeat(200_000);
+        const result = mapCodexMcpMessageToSessionEnvelopes(
+            { type: 'exec_command_end', call_id: 'call-1', output: `${noise}\nFATAL: the actual reason\n`, exit_code: 1 },
+            { currentTurnId: 'turn-1' }
+        );
+
+        const ev = result.envelopes[0].ev;
+        expect(ev.t).toBe('tool-call-end');
+        if (ev.t === 'tool-call-end') {
+            expect(ev.result!.length).toBeLessThan(100_000);
+            expect(ev.result).toContain('characters omitted');
+            expect(ev.result!.endsWith('FATAL: the actual reason\n')).toBe(true);
+            expect(ev.isError).toBe(true);
+        }
+    });
+
     it('maps token_count messages to usage-only session envelopes', () => {
         const result = mapCodexMcpMessageToSessionEnvelopes(
             { type: 'token_count', total_tokens: 10 },
