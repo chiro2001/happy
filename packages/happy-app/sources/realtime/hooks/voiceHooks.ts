@@ -13,6 +13,7 @@ import {
     resolveAgentName,
 } from './contextFormatters';
 import { storage } from '@/sync/storage';
+import type { ReadyTurn } from '@/sync/reducer/reducer';
 import { Message } from '@/sync/typesMessage';
 import {
     DEFAULT_VOICE_CONTEXT_MODE,
@@ -71,6 +72,38 @@ let reducedSessions = new Set<string>();
  * session's context grew from 3.3k to 40k tokens in about ninety seconds.
  */
 let injectedMessageText = new Map<string, string>();
+
+/**
+ * Turns already announced, per session, so one turn is announced once.
+ *
+ * The CLI closes a turn with a `turn-end` envelope, and every envelope id is
+ * fresh, so re-delivery cannot be caught by message id alone. The turn id can.
+ */
+const announcedTurns = new Map<string, Set<string>>();
+
+/**
+ * Sessions whose CLI closes a turn with a `turn-end` envelope.
+ *
+ * The CLI ends a turn twice on the wire: a `turn-end` envelope (which is what
+ * announces it) and a session-level `ready` event meaning "the CLI is idle
+ * again". The second names no turn, so it cannot be matched to the first by id
+ * — but it does not need to be: for a CLI that sends turn-ends at all, the idle
+ * event is always the echo of one, and never a completion of its own. Seen once
+ * per session rather than per turn, which is also what makes it survive the
+ * turns a stop adds.
+ *
+ * A CLI that sends no turn-ends leaves this unset, and there the idle event is
+ * the only completion signal there is — so it still announces.
+ */
+const reportsTurnEnds = new Set<string>();
+
+/**
+ * How many finished turns a session remembers for announcement purposes.
+ *
+ * Only the newest few can still be in flight, and a long-running session would
+ * otherwise grow this without bound.
+ */
+const ANNOUNCED_TURN_MEMORY = 50;
 
 /**
  * The tier in force for the running voice session.
@@ -408,9 +441,45 @@ export const voiceHooks = {
 
     /**
      * Called when Claude Code finishes processing (ready event)
+     *
+     * `turn` is what the client knows about the turn that ended: its id and
+     * whether it completed, failed or was cancelled. Two things follow from
+     * it, and both were bugs before it existed:
+     *
+     *  - A turn the user stopped is not news. Announcing "done working" for a
+     *    Stop is the assistant talking back about the user's own action.
+     *  - One turn, one announcement. The CLI marks the end of a turn twice —
+     *    a `turn-end` envelope for the protocol, and a session-level `ready`
+     *    event meaning "the CLI is idle again" — and both used to be announced.
+     *    A turn that ended twice on the wire (a completed turn followed by an
+     *    aborted one, as a Stop produces) therefore produced three identical
+     *    replies. The turn id makes the announcement idempotent, and the idle
+     *    echo is recognised because it names no turn at all.
      */
-    onReady(sessionId: string) {
+    onReady(sessionId: string, turn: ReadyTurn = {}) {
         if (currentConfig.DISABLE_READY_EVENTS) return;
+
+        const turnId = turn.turnId;
+        if (turnId) reportsTurnEnds.add(sessionId);
+
+        // The user pressed Stop. Nothing finished, so nothing is announced.
+        if (turn.status === 'cancelled') return;
+
+        if (turnId) {
+            const announced = announcedTurns.get(sessionId) ?? new Set<string>();
+            if (announced.has(turnId)) return;
+            announced.add(turnId);
+            // Bounded: a long session would otherwise remember every turn it
+            // ever ran. The newest few are all that can still be re-delivered.
+            if (announced.size > ANNOUNCED_TURN_MEMORY) {
+                announced.delete(announced.values().next().value!);
+            }
+            announcedTurns.set(sessionId, announced);
+        } else if (reportsTurnEnds.has(sessionId)) {
+            // No turn id: the session-level "gone idle" event, from a CLI whose
+            // turns are already announced by their own ends.
+            return;
+        }
 
         const background = isBackgroundSession(sessionId);
         if (shouldAnnounceCompletion(currentConfig, background)) {
@@ -446,6 +515,8 @@ export const voiceHooks = {
         shownSessions.clear();
         reducedSessions.clear();
         injectedMessageText.clear();
+        announcedTurns.clear();
+        reportsTurnEnds.clear();
         pendingPrompts = [];
     }
 };

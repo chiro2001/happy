@@ -12,7 +12,7 @@ import {
     selectPendingCommunications,
     type PendingAgentCommunication,
 } from "./agentCommunications";
-import { createReducer, reducer, ReducerState, SubagentView, registerUserMessageServerIds } from "./reducer/reducer";
+import { createReducer, reducer, ReadyTurn, ReducerState, SubagentView, registerUserMessageServerIds } from "./reducer/reducer";
 import { Message, messageSortKey } from "./typesMessage";
 import { NormalizedMessage } from "./typesRaw";
 import { isMachineOnline } from '@/utils/machineUtils';
@@ -330,7 +330,7 @@ interface StorageState {
     deleteMachine: (machineId: string) => void;
     applyLoaded: () => void;
     applyReady: () => void;
-    applyMessages: (sessionId: string, messages: NormalizedMessage[], source?: 'sync' | 'preload') => { changed: string[], settledMessageIds: string[], hasReadyEvent: boolean, enteredPlanMode: boolean };
+    applyMessages: (sessionId: string, messages: NormalizedMessage[], source?: 'sync' | 'preload') => { changed: string[], settledMessageIds: string[], readyTurns: ReadyTurn[], enteredPlanMode: boolean };
     applyUserMessageServerIds: (sessionId: string, pairs: readonly { serverId: string; localId: string }[]) => void;
     applyMessagesLoaded: (sessionId: string) => void;
     applyOlderMessagesPagination: (sessionId: string, info: { hasMore: boolean }) => void;
@@ -872,7 +872,7 @@ export const storage = create<StorageState>()((set, get) => {
         applyMessages: (sessionId: string, messages: NormalizedMessage[], source = 'sync') => {
             let changed = new Set<string>();
             let settledMessageIds: string[] = [];
-            let hasReadyEvent = false;
+            const readyTurns: ReadyTurn[] = [];
 
             // Track plan mode transitions through the batch in order.
             // Set true on EnterPlanMode, false on ExitPlanMode. The final value
@@ -920,8 +920,8 @@ export const storage = create<StorageState>()((set, get) => {
                 if (reducerResult.settledMessageIds) {
                     settledMessageIds = reducerResult.settledMessageIds;
                 }
-                if (reducerResult.hasReadyEvent) {
-                    hasReadyEvent = true;
+                if (reducerResult.readyTurns) {
+                    readyTurns.push(...reducerResult.readyTurns);
                 }
 
                 // Merge messages
@@ -973,7 +973,7 @@ export const storage = create<StorageState>()((set, get) => {
                 };
             });
 
-            return { changed: Array.from(changed), settledMessageIds, hasReadyEvent, enteredPlanMode };
+            return { changed: Array.from(changed), settledMessageIds, readyTurns, enteredPlanMode };
         },
         applyUserMessageServerIds: (sessionId: string, pairs: readonly { serverId: string; localId: string }[]) => set((state) => {
             if (pairs.length === 0) {

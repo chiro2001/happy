@@ -354,7 +354,15 @@ export type ReducerResult = {
         contextSize: number;
         contextWindow?: number;
     };
-    hasReadyEvent?: boolean;
+    /**
+     * Turns that ended in this batch, oldest first.
+     *
+     * A list rather than a flag because "a turn ended" is not one fact: the
+     * turn has an id, and it has an outcome, and a consumer that announces
+     * completions needs both — to announce each turn once, and to stay quiet
+     * about a turn the user stopped.
+     */
+    readyTurns?: ReadyTurn[];
     /**
      * Ids of already-visible messages that only settled this call (receipt
      * position applied, pending cleared). They appear in `messages` so the
@@ -362,6 +370,13 @@ export type ReducerResult = {
      * new-message consumers must not announce them a second time.
      */
     settledMessageIds?: string[];
+};
+
+/** A turn that has ended, as reported by a `ready` event. */
+export type ReadyTurn = {
+    /** Absent on the CLI's session-level "gone idle" event, which names no turn. */
+    turnId?: string;
+    status?: 'completed' | 'failed' | 'cancelled';
 };
 
 function updateLatestTodos(state: ReducerState, value: unknown, timestamp: number) {
@@ -460,7 +475,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
 
     let newMessages: Message[] = [];
     let changed: Set<string> = new Set();
-    let hasReadyEvent = false;
+    const readyTurns: ReadyTurn[] = [];
     // Rows that only settled this call — re-rendered, but not new content.
     let settledIds: Set<string> = new Set();
 
@@ -589,7 +604,10 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
         if (msg.role === 'event' && msg.content.type === 'ready') {
             // Mark as processed to prevent duplication but don't add to messages
             state.messageIds.set(msg.id, msg.id);
-            hasReadyEvent = true;
+            readyTurns.push({
+                ...(msg.content.turnId ? { turnId: msg.content.turnId } : {}),
+                ...(msg.content.status ? { status: msg.content.status } : {}),
+            });
             continue;
         }
 
@@ -1515,7 +1533,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
             contextSize: state.latestUsage.contextSize,
             ...(state.latestUsage.contextWindow ? { contextWindow: state.latestUsage.contextWindow } : {}),
         } : undefined,
-        hasReadyEvent: hasReadyEvent || undefined,
+        readyTurns: readyTurns.length > 0 ? readyTurns : undefined,
         settledMessageIds: settledIds.size > 0 ? Array.from(settledIds) : undefined
     };
 }

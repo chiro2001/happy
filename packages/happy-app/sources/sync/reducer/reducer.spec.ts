@@ -3015,7 +3015,49 @@ describe('reducer', () => {
             }]);
 
             expect(result.messages).toHaveLength(0);
-            expect(result.hasReadyEvent).toBe(true);
+            expect(result.readyTurns).toEqual([{}]);
+        });
+
+        it('reports a ready event once, however many times it is delivered', () => {
+            // The same envelope reaches a client twice as a matter of course:
+            // once in the socket update that announced it, and again in the
+            // history fetch that update triggers when the sequence numbers are
+            // not consecutive. Row deduplication covers the transcript, and
+            // `hasReadyEvent` is *not* a row — it is what starts the voice
+            // assistant announcing a finished turn. Reporting it per delivery
+            // makes the assistant announce the same completion again, which is
+            // exactly the "three identical replies" a stop used to produce.
+            const state = createReducer();
+            const ready = {
+                id: 'ready-1',
+                localId: null,
+                createdAt: 1000,
+                role: 'event' as const,
+                content: { type: 'ready' as const },
+                isSidechain: false,
+            };
+
+            expect(reducer(state, [ready]).readyTurns).toHaveLength(1);
+            expect(reducer(state, [ready]).readyTurns).toBeUndefined();
+            // A different turn's ready is still news.
+            expect(reducer(state, [{ ...ready, id: 'ready-2' }]).readyTurns).toHaveLength(1);
+        });
+
+        it('carries the turn and its outcome out of a turn-end envelope', () => {
+            // The voice layer needs both to announce each turn once and to stay
+            // quiet about a turn the user stopped — see `voiceHooks.onReady`.
+            const state = createReducer();
+            const result = reducer(state, [{
+                id: 'turn-end-1',
+                localId: null,
+                createdAt: 1000,
+                role: 'event',
+                content: { type: 'ready', turnId: 'turn-7', status: 'cancelled' as const },
+                isSidechain: false,
+                turn: 'turn-7',
+            }]);
+
+            expect(result.readyTurns).toEqual([{ turnId: 'turn-7', status: 'cancelled' }]);
         });
 
         it('hides turn-start lifecycle messages', () => {

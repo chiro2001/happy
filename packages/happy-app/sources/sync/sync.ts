@@ -3282,8 +3282,11 @@ class Sync {
         if (m.length > 0) {
             voiceHooks.onMessages(sessionId, m);
         }
-        if (result.hasReadyEvent) {
-            voiceHooks.onReady(sessionId);
+        // Every turn that ended in this batch, in order. The voice layer
+        // announces each one at most once, and stays quiet about a turn the
+        // user stopped — see `voiceHooks.onReady`.
+        for (const turn of result.readyTurns) {
+            voiceHooks.onReady(sessionId, turn);
         }
         if (result.enteredPlanMode) {
             // The EnterPlanMode auto-switch only wrote the local mirror; push

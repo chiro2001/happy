@@ -101,7 +101,7 @@ beforeEach(() => {
         mocks.state.sessionMessages[id] = { messages, messagesMap: { message: messages[0] }, hasMoreOlder: false };
         const enteredPlanMode = messagePlanMode(messages) === true;
         if (enteredPlanMode && source !== 'preload') mocks.state.sessions[id].permissionMode = 'plan';
-        return { changed: ['message'], hasReadyEvent: true, enteredPlanMode };
+        return { changed: ['message'], readyTurns: [], enteredPlanMode };
     });
     mocks.applyOlderMessagesPagination.mockImplementation((id, { hasMore }) => {
         if (mocks.state.sessionMessages[id]) mocks.state.sessionMessages[id].hasMoreOlder = hasMore;
@@ -133,7 +133,7 @@ describe('background history budget', () => {
             const previous = mocks.state.sessionMessages[id]?.messagesMap ?? {};
             const messagesMap = { ...previous, ...Object.fromEntries(messages.map((m: any) => [m.id, m])) };
             mocks.state.sessionMessages[id] = { ...mocks.state.sessionMessages[id], messagesMap };
-            return { changed: [], hasReadyEvent: false, enteredPlanMode: false };
+            return { changed: [], readyTurns: [], enteredPlanMode: false };
         });
         // Preserve IDs in this fixture's normalized payload (the boundary mock
         // returns content directly) so duplicate/missing pages are observable.

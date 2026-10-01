@@ -30,6 +30,17 @@ const agentEventSchema = z.discriminatedUnion('type', [z.object({
     endsAt: z.number(),
 }), z.object({
     type: z.literal('ready'),
+    /**
+     * Which turn finished, and how, when the producer said so.
+     *
+     * A `turn-end` envelope carries both, and the client folds it into this
+     * event because "the turn is over" is what every consumer wants from it.
+     * The older session-level `ready` event carries neither: it means "the CLI
+     * has gone idle", which is a different statement, and it arrives for the
+     * same turn — see `voiceHooks.onReady` for how the two are told apart.
+     */
+    turnId: z.string().optional(),
+    status: z.enum(['completed', 'failed', 'cancelled']).optional(),
 }), z.object({
     // A receipt for a message this device sent: the agent has taken it into
     // context. `ref` is the server message id the receipt names. Consumed by
@@ -731,7 +742,14 @@ function normalizeSessionEnvelopeInner(
             createdAt: messageCreatedAt,
             role: 'event',
             isSidechain: false,
-            content: { type: 'ready' },
+            // The turn and its outcome travel with the ready event so a
+            // consumer can tell two turns apart — and can tell a turn the user
+            // stopped from one that finished.
+            content: {
+                type: 'ready',
+                ...(envelope.turn ? { turnId: envelope.turn } : {}),
+                status: envelope.ev.status,
+            },
             meta,
             turn: envelope.turn,
         } satisfies NormalizedMessage;

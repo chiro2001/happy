@@ -278,4 +278,61 @@ describe('voiceHooks context tiers', () => {
             expect(prompt).not.toContain('A step one');
         });
     });
+
+    describe('announcing finished turns', () => {
+        beforeEach(() => {
+            setTier('lite');
+            mocks.focusedSessionId = A;
+            voiceHooks.onVoiceStarted(A);
+            mocks.prompts.length = 0;
+        });
+
+        it('stays quiet when the user stops the turn themselves', () => {
+            // A Stop is the user's own action. Announcing "done working" for it
+            // is the assistant talking back about something the user just did.
+            voiceHooks.onReady(A, { turnId: 'turn-1', status: 'cancelled' });
+            expect(mocks.prompts).toEqual([]);
+        });
+
+        it('announces a finished turn once, however often it is reported', () => {
+            // The CLI ends a turn twice on the wire — a `turn-end` envelope,
+            // then a session-level `ready` meaning "gone idle" — and a stop can
+            // add another turn-end for the turn it aborted. A live session heard
+            // three identical replies from this; the turn id is what makes the
+            // announcement idempotent.
+            voiceHooks.onReady(A, { turnId: 'turn-1', status: 'completed' });
+            expect(mocks.prompts).toHaveLength(1);
+
+            // Same turn again: a re-delivery, not a second completion.
+            voiceHooks.onReady(A, { turnId: 'turn-1', status: 'completed' });
+            expect(mocks.prompts).toHaveLength(1);
+
+            // The CLI's idle echo carries no turn id, and belongs to the turn
+            // just announced.
+            voiceHooks.onReady(A, {});
+            expect(mocks.prompts).toHaveLength(1);
+        });
+
+        it('still announces the next turn', () => {
+            voiceHooks.onReady(A, { turnId: 'turn-1', status: 'completed' });
+            voiceHooks.onReady(A, {});
+            voiceHooks.onReady(A, { turnId: 'turn-2', status: 'completed' });
+            expect(mocks.prompts).toHaveLength(2);
+        });
+
+        it('announces an idle event from a producer that sends no turn ids', () => {
+            // Older CLIs report completion only as the session-level event.
+            // There it is not an echo of anything, and suppressing it would
+            // leave the user with no notice at all.
+            voiceHooks.onReady(A, {});
+            expect(mocks.prompts).toHaveLength(1);
+        });
+
+        it('keeps a stopped turn from consuming the next turn\'s announcement', () => {
+            voiceHooks.onReady(A, { turnId: 'turn-1', status: 'cancelled' });
+            voiceHooks.onReady(A, { turnId: 'turn-2', status: 'completed' });
+            voiceHooks.onReady(A, {});
+            expect(mocks.prompts).toHaveLength(1);
+        });
+    });
 });
