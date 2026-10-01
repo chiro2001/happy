@@ -111,6 +111,71 @@ describe('voiceHooks context tiers', () => {
             expect(mocks.prompts).toHaveLength(0);
         });
 
+        /**
+         * `applyMessages` reports every message its reducer produced, including
+         * ones that merely grew or were re-delivered by a later socket update.
+         * Injecting the same text again does not overwrite it — the server
+         * appends — so both copies are re-billed on every later turn.
+         *
+         * A live desktop session showed the same `CodexBash` call injected
+         * twice inside one second, and context grew 3.3k → 40k tokens in about
+         * ninety seconds.
+         */
+        it('does not inject the same message text twice', () => {
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+
+            const msg = message('42', 'Codex is using CodexBash');
+            voiceHooks.onMessages(A, [msg]);
+            voiceHooks.onMessages(A, [msg]);
+
+            const injections = mocks.context.filter((c) => c.includes('session-a'));
+            expect(injections).toHaveLength(1);
+        });
+
+        it('injects again when the message actually changed', () => {
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+
+            voiceHooks.onMessages(A, [message('43', 'first half')]);
+            voiceHooks.onMessages(A, [message('43', 'first half and second half')]);
+
+            const injections = mocks.context.filter((c) => c.includes('session-a'));
+            expect(injections).toHaveLength(2);
+        });
+
+        it('forgets what it injected when the voice session restarts', () => {
+            voiceHooks.onVoiceStarted(A);
+            voiceHooks.onMessages(A, [message('44', 'same text')]);
+            voiceHooks.onVoiceStopped();
+
+            // A new session must not inherit the old one's dedup state, or a
+            // message replayed into it would be dropped as a duplicate.
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+            voiceHooks.onMessages(A, [message('44', 'same text')]);
+
+            expect(mocks.context.filter((c) => c.includes('session-a'))).toHaveLength(1);
+        });
+
+        it('clips a long tool description to the tier budget', () => {
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+            const huge = 'x'.repeat(50_000);
+
+            voiceHooks.onMessages(A, [{
+                id: '45',
+                kind: 'tool-call',
+                createdAt: 45,
+                tool: { name: 'CodexBash', description: huge, input: {} },
+            } as unknown as Message]);
+
+            const sent = mocks.context.join('\n');
+            expect(sent).toContain('truncated');
+            // lite's cap is 700; allow for the surrounding framing.
+            expect(sent.length).toBeLessThan(2000);
+        });
+
         it('upgrades a previously background session once the user moves to it', () => {
             voiceHooks.onVoiceStarted(A);
             voiceHooks.onReady(B);

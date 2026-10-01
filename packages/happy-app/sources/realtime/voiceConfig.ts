@@ -55,6 +55,21 @@ export interface VoiceConfig {
      * point is continuity.
      */
     RESET_AFTER_TURNS: number | null;
+    /**
+     * Longest single message allowed into the context, in characters.
+     *
+     * The transcript has no natural size limit, and the worst offenders are
+     * tool calls: Codex puts the entire shell command in the tool description,
+     * so one `CodexBash` can be several thousand characters. Measured on a live
+     * desktop session, context grew from 3.3k to 40k tokens in about ninety
+     * seconds, and every one of those tokens is re-billed on every later turn.
+     *
+     * Truncation is not free — the assistant loses the tail of long output —
+     * which is why the cap is per tier rather than global. `full` keeps enough
+     * to be useful; the cheap tiers keep the shape of what happened and rely on
+     * the assistant asking the session for detail it actually needs.
+     */
+    MAX_MESSAGE_CHARS: number;
 }
 
 /**
@@ -77,6 +92,7 @@ const FULL: VoiceConfig = {
     REPORT_ONLY_BACKGROUND: false,
     INCLUDE_SESSION_DIRECTORY: true,
     RESET_AFTER_TURNS: null,
+    MAX_MESSAGE_CHARS: 4000,
 };
 
 /**
@@ -92,6 +108,7 @@ const LITE: VoiceConfig = {
     REPORT_ONLY_BACKGROUND: true,
     INCLUDE_SESSION_DIRECTORY: true,
     RESET_AFTER_TURNS: 20,
+    MAX_MESSAGE_CHARS: 700,
 };
 
 /**
@@ -108,6 +125,7 @@ const MINIMAL: VoiceConfig = {
     INCLUDE_SESSION_DIRECTORY: false,
     ENABLE_DEBUG_LOGGING: false,
     RESET_AFTER_TURNS: 10,
+    MAX_MESSAGE_CHARS: 300,
 };
 
 export const VOICE_CONFIGS: Record<VoiceContextMode, VoiceConfig> = {

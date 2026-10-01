@@ -1,5 +1,6 @@
 import { getCurrentRealtimeSessionId, getVoiceSession, isVoiceSessionStarted, setCurrentRealtimeSessionId } from '../RealtimeSession';
 import {
+    formatMessage,
     formatCompletionNotice,
     formatCurrentSession,
     formatNewMessages,
@@ -55,6 +56,21 @@ let shownSessions = new Set<string>();
  * upgrade them instead of leaving them permanently blind.
  */
 let reducedSessions = new Set<string>();
+
+/**
+ * The exact text already handed to the server for each message.
+ *
+ * `applyMessages` reports every message its reducer produced, which includes a
+ * message that merely grew — so a streaming reply, or any message that is
+ * re-delivered by a later socket update, arrives here again with the same
+ * content. Injecting it a second time does not overwrite the first: the server
+ * appends, and both copies are then re-billed on every later turn.
+ *
+ * A live desktop session showed this directly — the same `CodexBash` call,
+ * character for character, injected twice inside the same second — and the
+ * session's context grew from 3.3k to 40k tokens in about ninety seconds.
+ */
+let injectedMessageText = new Map<string, string>();
 
 /**
  * The tier in force for the running voice session.
@@ -314,7 +330,34 @@ export const voiceHooks = {
 
         const ctx = injectSessionContext(sessionId, background);
         if (ctx) sendContext(ctx);
-        sendContext(formatNewMessages(sessionId, messages, currentConfig, agentNameFor(sessionId)));
+
+        // Only what has not been sent before, and only the parts that have
+        // changed since. See `injectedMessageText`.
+        const agentName = agentNameFor(sessionId);
+        const fresh: Message[] = [];
+        let suppressed = 0;
+        for (const message of messages) {
+            const text = formatMessage(message, currentConfig, agentName);
+            if (!text) continue;
+            if (injectedMessageText.get(message.id) === text) {
+                suppressed += 1;
+                continue;
+            }
+            injectedMessageText.set(message.id, text);
+            fresh.push(message);
+        }
+        if (suppressed > 0) {
+            // Worth a line: this is the difference between a transcript that
+            // grows with the agent's output and one that grows with the number
+            // of updates to it, and the two look identical in the server's
+            // usage numbers.
+            console.log(
+                `🎤 Voice: suppressed ${suppressed} re-injection(s) of already-sent messages`,
+            );
+        }
+        if (fresh.length === 0) return;
+
+        sendContext(formatNewMessages(sessionId, fresh, currentConfig, agentName));
     },
 
     /**
@@ -332,6 +375,7 @@ export const voiceHooks = {
         }
         shownSessions.clear();
         reducedSessions.clear();
+        injectedMessageText.clear();
         pendingPrompts = [];
         ensureModeSubscription();
 
@@ -401,6 +445,7 @@ export const voiceHooks = {
         currentConfig = VOICE_CONFIG;
         shownSessions.clear();
         reducedSessions.clear();
+        injectedMessageText.clear();
         pendingPrompts = [];
     }
 };

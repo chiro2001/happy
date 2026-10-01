@@ -57,6 +57,20 @@ export function formatPermissionRequest(
 // Message formatting
 //
 
+/**
+ * Clip one field to the tier's per-message budget.
+ *
+ * The marker is part of the text rather than a log line because the assistant
+ * has to know the difference between "the command was short" and "I am not
+ * seeing all of it" — otherwise it will reason confidently about a truncated
+ * command.
+ */
+function clip(text: string, config: VoiceConfig): string {
+    const cap = config.MAX_MESSAGE_CHARS;
+    if (text.length <= cap) return text;
+    return `${text.slice(0, cap)}…[truncated, ${text.length - cap} more characters]`;
+}
+
 export function formatMessage(
     message: Message,
     config: VoiceConfig = VOICE_CONFIG,
@@ -66,17 +80,22 @@ export function formatMessage(
     // Lines
     let lines: string[] = [];
     if (message.kind === 'agent-text') {
-        lines.push(`${agentName}: \n<text>${message.text}</text>`);
+        lines.push(`${agentName}: \n<text>${clip(message.text, config)}</text>`);
     } else if (message.kind === 'user-text') {
-        lines.push(`User sent message: \n<text>${message.text}</text>`);
+        lines.push(`User sent message: \n<text>${clip(message.text, config)}</text>`);
     } else if (message.kind === 'tool-call' && !config.DISABLE_TOOL_CALLS) {
-        const toolDescription = message.tool.description ? ` - ${message.tool.description}` : '';
+        // Codex puts the whole shell command here, so this is usually the
+        // largest thing in the transcript.
+        const description = message.tool.description
+            ? clip(message.tool.description, config)
+            : '';
+        const toolDescription = description ? ` - ${description}` : '';
         if (config.LIMITED_TOOL_CALLS) {
             if (message.tool.description) {
                 lines.push(`${agentName} is using ${message.tool.name}${toolDescription}`);
             }
         } else {
-            lines.push(`${agentName} is using ${message.tool.name}${toolDescription} (tool_use_id: ${message.id}) with arguments: <arguments>${JSON.stringify(message.tool.input)}</arguments>`);
+            lines.push(`${agentName} is using ${message.tool.name}${toolDescription} (tool_use_id: ${message.id}) with arguments: <arguments>${clip(JSON.stringify(message.tool.input), config)}</arguments>`);
         }
     }
     if (lines.length === 0) {
