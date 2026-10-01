@@ -33,7 +33,7 @@ const TOOL_DEFINITIONS = [
         function: {
             name: 'sendMessageToSession',
             description:
-                '把用户的指令发送给正在运行的编码代理（Codex）。' +
+                '把用户的指令发送给正在运行的编码代理。' +
                 '当用户要求转达、询问或指示代理做事时调用。',
             parameters: {
                 type: 'object',
@@ -105,6 +105,25 @@ const TOOL_DEFINITIONS_MINIMAL = [
     },
 ];
 
+/**
+ * Rough token weight of a string, matching the estimator in
+ * tools/qwen-realtime-test/measure_context.py: ~4 chars per token for ASCII and
+ * ~1.5 for CJK. Good to about ±10%, which is enough to tell which component is
+ * paying for a surprise.
+ */
+function estimateTokens(text: string): number {
+    let cjk = 0;
+    let ascii = 0;
+    let other = 0;
+    for (const char of text) {
+        const code = char.codePointAt(0)!;
+        if (code >= 0x4e00 && code <= 0x9fff) cjk += 1;
+        else if (code < 128) ascii += 1;
+        else other += 1;
+    }
+    return Math.round(cjk / 1.5 + ascii / 4 + other / 3);
+}
+
 function toolsForMode(mode: VoiceContextMode | undefined) {
     return mode === 'minimal' ? TOOL_DEFINITIONS_MINIMAL : TOOL_DEFINITIONS;
 }
@@ -123,7 +142,13 @@ function toSessionOptions(config: VoiceSessionConfig, tools: unknown[]) {
 
     return {
         instructions,
-        initialContext: config.initialContext,
+        // The brief is already inside `instructions`: `buildVoiceSystemPrompt`
+        // embeds it under "# Conversation history so far". Passing it again
+        // here would send the same text a second time as the opening user turn,
+        // and this is the largest single injection in the session — it is
+        // re-billed on every turn for as long as the connection lasts. Only
+        // send it separately when there is no system prompt to carry it.
+        initialContext: config.systemPrompt ? undefined : config.initialContext,
         tools,
         voice: QWEN_DEFAULTS.voice,
         silenceDurationMs: QWEN_DEFAULTS.silenceDurationMs,
@@ -255,8 +280,35 @@ class QwenVoiceSessionImpl implements VoiceSession {
         this.tools = toolsForMode(settings.voiceContextMode);
         this.turnCount = 0;
 
+        this.logSessionComposition(config);
         this.connectOnce(config);
         return this.conversationId;
+    }
+
+    /**
+     * Log what the opening turn actually costs, broken down.
+     *
+     * Worth its line because the fixed part is invisible otherwise: a tier can
+     * look correct in the source and still bill more than expected, and the
+     * only way to tell which component is responsible is to see them side by
+     * side against the first `usage` line for the session.
+     */
+    private logSessionComposition(config: VoiceSessionConfig): void {
+        const mode = storage.getState().settings.voiceContextMode;
+        const tools = JSON.stringify(this.tools);
+        const prompt = config.systemPrompt ?? '';
+        const brief = config.systemPrompt ? '' : (config.initialContext ?? '');
+        const parts = [
+            `prompt=${estimateTokens(prompt)}`,
+            `tools=${estimateTokens(tools)}`,
+            `brief=${estimateTokens(brief)}`,
+        ];
+        const total = estimateTokens(prompt) + estimateTokens(tools) + estimateTokens(brief);
+        console.log(
+            `[Qwen voice] session start · tier=${mode} ·`,
+            parts.join(' '),
+            `| est. fixed ≈ ${total} tok`,
+        );
     }
 
     /**
@@ -409,6 +461,12 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 this.flushAssistantText();
                 // The suppressed turn is over; later replies are normal again.
                 this.muteNextResponse = false;
+                // Consume the speech mark. A turn triggered by a prompt rather
+                // than by the user speaking has no speech to measure from, and
+                // leaving the previous turn's mark in place made those turns
+                // report the whole idle gap as "LLM+TTS" — 65s and 71s in one
+                // captured session, neither of which was real.
+                this.speechStopAt = null;
                 this.maybeResetContext();
             },
             onUsage: (usage: QwenUsage) => {
@@ -504,6 +562,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
             this.suppressPlayback = false;
             this.muteNextResponse = false;
             this.lastConfig = { ...config, initialContext, systemPrompt };
+            this.logSessionComposition(this.lastConfig);
             this.connectOnce(this.lastConfig);
         } catch (error) {
             console.warn('[Qwen voice] context reset failed:', error);

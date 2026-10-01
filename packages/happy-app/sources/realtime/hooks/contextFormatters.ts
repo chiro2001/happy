@@ -1,6 +1,7 @@
 import { Session } from "@/sync/storageTypes";
 import { Message } from "@/sync/typesMessage";
 import { trimIdent } from "@/utils/trimIdent";
+import { getHarnessName } from "@/utils/harnessCatalog";
 import { VOICE_CONFIG, type VoiceConfig } from "../voiceConfig";
 
 interface SessionMetadata {
@@ -8,9 +9,31 @@ interface SessionMetadata {
     path?: string;
     machineId?: string;
     homeDir?: string;
+    /** Which coding agent runs in the session: claude, codex, agy, ... */
+    flavor?: string | null;
     [key: string]: any;
 }
 
+/**
+ * What to call the coding agent behind a session.
+ *
+ * This transcript was written when Claude Code was the only harness Happy
+ * drove, so every line named it outright. That is wrong for a Codex session,
+ * and not merely cosmetic: the assistant is explicitly asked what it can see,
+ * and it answered "Claude Code is using CodexBash" — reporting the wrong agent
+ * for work it had just been told about. The harness is in the session metadata,
+ * so the name is derived rather than assumed.
+ *
+ * The fallback stays "Claude Code" because sessions predating multi-harness
+ * support carry no flavor, and they were all Claude.
+ */
+export function resolveAgentName(flavor?: string | null): string {
+    // `gpt` and `openai` are older Codex identifiers that still appear in
+    // metadata written by earlier CLI versions.
+    if (flavor === 'gpt' || flavor === 'openai') return getHarnessName('codex');
+    if (!flavor) return getHarnessName('claude');
+    return getHarnessName(flavor);
+}
 
 /**
  * Format a permission request for natural language context
@@ -19,10 +42,11 @@ export function formatPermissionRequest(
     sessionId: string,
     requestId: string,
     toolName: string,
-    toolArgs: any
+    toolArgs: any,
+    agentName: string = getHarnessName('claude'),
 ): string {
     return trimIdent(`
-        Claude Code is requesting permission to use ${toolName} (session ${sessionId}):
+        ${agentName} is requesting permission to use ${toolName} (session ${sessionId}):
         <request_id>${requestId}</request_id>
         <tool_name>${toolName}</tool_name>
         <tool_args>${JSON.stringify(toolArgs)}</tool_args>
@@ -36,22 +60,23 @@ export function formatPermissionRequest(
 export function formatMessage(
     message: Message,
     config: VoiceConfig = VOICE_CONFIG,
+    agentName: string = getHarnessName('claude'),
 ): string | null {
 
     // Lines
     let lines: string[] = [];
     if (message.kind === 'agent-text') {
-        lines.push(`Claude Code: \n<text>${message.text}</text>`);
+        lines.push(`${agentName}: \n<text>${message.text}</text>`);
     } else if (message.kind === 'user-text') {
         lines.push(`User sent message: \n<text>${message.text}</text>`);
     } else if (message.kind === 'tool-call' && !config.DISABLE_TOOL_CALLS) {
         const toolDescription = message.tool.description ? ` - ${message.tool.description}` : '';
         if (config.LIMITED_TOOL_CALLS) {
             if (message.tool.description) {
-                lines.push(`Claude Code is using ${message.tool.name}${toolDescription}`);
+                lines.push(`${agentName} is using ${message.tool.name}${toolDescription}`);
             }
         } else {
-            lines.push(`Claude Code is using ${message.tool.name}${toolDescription} (tool_use_id: ${message.id}) with arguments: <arguments>${JSON.stringify(message.tool.input)}</arguments>`);
+            lines.push(`${agentName} is using ${message.tool.name}${toolDescription} (tool_use_id: ${message.id}) with arguments: <arguments>${JSON.stringify(message.tool.input)}</arguments>`);
         }
     }
     if (lines.length === 0) {
@@ -64,8 +89,9 @@ export function formatNewSingleMessage(
     sessionId: string,
     message: Message,
     config: VoiceConfig = VOICE_CONFIG,
+    agentName: string = getHarnessName('claude'),
 ): string | null {
-    let formatted = formatMessage(message, config);
+    let formatted = formatMessage(message, config, agentName);
     if (!formatted) {
         return null;
     }
@@ -76,10 +102,11 @@ export function formatNewMessages(
     sessionId: string,
     messages: Message[],
     config: VoiceConfig = VOICE_CONFIG,
+    agentName: string = getHarnessName('claude'),
 ): string | null {
     let formatted = [...messages]
         .sort((a, b) => a.createdAt - b.createdAt)
-        .map((m) => formatMessage(m, config))
+        .map((m) => formatMessage(m, config, agentName))
         .filter(Boolean);
     if (formatted.length === 0) {
         return null;
@@ -91,6 +118,7 @@ export function formatHistory(
     sessionId: string,
     messages: Message[],
     config: VoiceConfig = VOICE_CONFIG,
+    agentName: string = getHarnessName('claude'),
 ): string | null {
     // 0 means "no history at all" (the minimal tier); negative means "all of
     // it" (the pre-tier behaviour); positive is a cap.
@@ -100,7 +128,7 @@ export function formatHistory(
         : limit > 0
             ? messages.slice(0, limit)
             : messages;
-    let formatted = messagesToFormat.map((m) => formatMessage(m, config)).filter(Boolean);
+    let formatted = messagesToFormat.map((m) => formatMessage(m, config, agentName)).filter(Boolean);
     if (formatted.length === 0) {
         return null;
     }
@@ -118,12 +146,16 @@ export function formatSessionFull(
 ): string {
     const sessionName = session.metadata?.summary?.text;
     const sessionPath = session.metadata?.path;
+    const agentName = resolveAgentName(session.metadata?.flavor);
     const lines: string[] = [];
 
     // Add session context
     lines.push(`# Session ID: ${session.id}`);
     lines.push(`# Project path: ${sessionPath}`);
     lines.push(`# Session summary:\n${sessionName}`);
+    // Named explicitly so the assistant knows which agent it is talking about
+    // even before the first message arrives.
+    lines.push(`# Coding agent: ${agentName}`);
 
     // Add session metadata if available
     if (session.metadata?.summary?.text) {
@@ -134,7 +166,7 @@ export function formatSessionFull(
 
     // Add history — omitted entirely in the tiers that carry none, so the
     // prompt does not end on an empty section.
-    const history = formatHistory(session.id, messages, config);
+    const history = formatHistory(session.id, messages, config, agentName);
     if (history) {
         lines.push('## Our interaction history so far');
         lines.push('');
@@ -154,10 +186,11 @@ export function formatSessionFull(
 export function formatCompletionNotice(
     sessionId: string,
     summary?: string | null,
+    agentName: string = getHarnessName('claude'),
 ): string {
     const label = summary?.trim() ? ` "${summary.trim()}"` : '';
     return (
-        `Background session finished working: ${sessionId}${label}. `
+        `${agentName} finished working in background session: ${sessionId}${label}. `
         + `Report this to the user in one short sentence. `
         + `Do not read its output aloud unless asked.`
     );
@@ -175,6 +208,9 @@ export function formatSessionFocus(sessionId: string, metadata?: SessionMetadata
     return `Session became focused: ${sessionId}`;
 }
 
-export function formatReadyEvent(sessionId: string): string {
-    return `Claude Code done working in session: ${sessionId}. The previous message(s) are the summary of the work done. Report this to the human immediately.`;
+export function formatReadyEvent(
+    sessionId: string,
+    agentName: string = getHarnessName('claude'),
+): string {
+    return `${agentName} done working in session: ${sessionId}. The previous message(s) are the summary of the work done. Report this to the human immediately.`;
 }

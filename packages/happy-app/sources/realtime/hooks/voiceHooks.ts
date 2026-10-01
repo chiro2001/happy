@@ -7,7 +7,8 @@ import {
     formatSessionFocus,
     formatSessionFull,
     formatSessionOffline,
-    formatSessionOnline
+    formatSessionOnline,
+    resolveAgentName,
 } from './contextFormatters';
 import { storage } from '@/sync/storage';
 import { Message } from '@/sync/typesMessage';
@@ -36,6 +37,8 @@ interface SessionMetadata {
     summary?: { text?: string };
     path?: string;
     machineId?: string;
+    /** Which coding agent runs in the session: claude, codex, agy, ... */
+    flavor?: string | null;
     [key: string]: any;
 }
 
@@ -78,6 +81,17 @@ export function getActiveVoiceConfig(): VoiceConfig {
  */
 function isBackgroundSession(sessionId: string): boolean {
     return isBackground(getCurrentRealtimeSessionId(), sessionId);
+}
+
+/**
+ * The harness name for a session, for the lines that name the agent outright.
+ *
+ * Resolved from session metadata at the moment of use rather than cached: the
+ * flavor is only present once the session's metadata has synced, and a session
+ * that arrives before its metadata would otherwise be mislabelled forever.
+ */
+function agentNameFor(sessionId: string): string {
+    return resolveAgentName(storage.getState().sessions[sessionId]?.metadata?.flavor);
 }
 
 // Prompt queue — batched text messages that trigger agent responses
@@ -239,7 +253,13 @@ export const voiceHooks = {
         if (ctx) sendContext(ctx);
         // Permission requests are always a prompt: the agent is blocked until
         // someone answers, so this must reach the user even in minimal mode.
-        sendPrompt(formatPermissionRequest(sessionId, requestId, toolName, toolArgs));
+        sendPrompt(formatPermissionRequest(
+            sessionId,
+            requestId,
+            toolName,
+            toolArgs,
+            agentNameFor(sessionId),
+        ));
     },
 
     /**
@@ -260,7 +280,7 @@ export const voiceHooks = {
 
         const ctx = injectSessionContext(sessionId, background);
         if (ctx) sendContext(ctx);
-        sendContext(formatNewMessages(sessionId, messages));
+        sendContext(formatNewMessages(sessionId, messages, currentConfig, agentNameFor(sessionId)));
     },
 
     /**
@@ -313,13 +333,17 @@ export const voiceHooks = {
             const ctx = injectSessionContext(sessionId, true);
             if (ctx) sendContext(ctx);
             const session = storage.getState().sessions[sessionId];
-            sendPrompt(formatCompletionNotice(sessionId, session?.metadata?.summary?.text));
+            sendPrompt(formatCompletionNotice(
+                sessionId,
+                session?.metadata?.summary?.text,
+                agentNameFor(sessionId),
+            ));
             return;
         }
 
         const ctx = injectSessionContext(sessionId, false);
         if (ctx) sendContext(ctx);
-        sendPrompt(formatReadyEvent(sessionId));
+        sendPrompt(formatReadyEvent(sessionId, agentNameFor(sessionId)));
     },
 
     /**

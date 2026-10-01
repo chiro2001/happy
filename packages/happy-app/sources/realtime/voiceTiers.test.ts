@@ -11,7 +11,9 @@ import {
 import {
     formatCompletionNotice,
     formatNewMessages,
+    formatReadyEvent,
     formatSessionFull,
+    resolveAgentName,
 } from './hooks/contextFormatters';
 import {
     getVoiceSystemPromptBase,
@@ -52,10 +54,10 @@ function message(id: string, kind: 'agent-text' | 'user-text', text: string): Me
     } as Message;
 }
 
-function session(id: string, summary: string): Session {
+function session(id: string, summary: string, flavor?: string): Session {
     return {
         id,
-        metadata: { summary: { text: summary }, path: '/home/chiro/project' },
+        metadata: { summary: { text: summary }, path: '/home/chiro/project', flavor },
     } as unknown as Session;
 }
 
@@ -171,6 +173,63 @@ describe('voice context tiers', () => {
             expect(VOICE_CONFIGS.full.RESET_AFTER_TURNS).toBeNull();
             expect(VOICE_CONFIGS.lite.RESET_AFTER_TURNS).toBe(20);
             expect(VOICE_CONFIGS.minimal.RESET_AFTER_TURNS).toBe(10);
+        });
+    });
+
+    /**
+     * The transcript named Claude Code outright for every session. A captured
+     * Codex session showed the assistant replying "Claude Code is using
+     * CodexBash" — it was reporting the wrong agent for work it had just been
+     * told about, which is the kind of error that silently discredits every
+     * other thing it says.
+     */
+    describe('names the actual harness', () => {
+        it('maps flavors, including the older Codex identifiers', () => {
+            expect(resolveAgentName('codex')).toBe('Codex');
+            expect(resolveAgentName('gpt')).toBe('Codex');
+            expect(resolveAgentName('openai')).toBe('Codex');
+            expect(resolveAgentName('claude')).toBe('Claude Code');
+            expect(resolveAgentName('agy')).toBe('Antigravity');
+            // Sessions older than multi-harness support were all Claude.
+            expect(resolveAgentName(null)).toBe('Claude Code');
+            expect(resolveAgentName(undefined)).toBe('Claude Code');
+            // An unknown flavor is still better than the wrong product name.
+            expect(resolveAgentName('something-new')).toBe('something-new');
+        });
+
+        it('uses the harness name in message lines', () => {
+            const messages = [message('m1', 'agent-text', 'Patched the parser.')];
+            const codex = formatNewMessages(SESSION_ID, messages, VOICE_CONFIGS.full, 'Codex')!;
+            expect(codex).toContain('Codex:');
+            expect(codex).not.toContain('Claude Code');
+        });
+
+        it('uses the harness name in the ready event', () => {
+            expect(formatReadyEvent(SESSION_ID, 'Codex')).toContain('Codex done working');
+            expect(formatReadyEvent(SESSION_ID)).toContain('Claude Code done working');
+        });
+
+        it('uses the harness name in completion notices', () => {
+            const notice = formatCompletionNotice(OTHER_ID, 'Refactor done', 'Codex');
+            expect(notice).toContain('Codex finished working');
+        });
+
+        it('reads the harness off the session when dumping its context', () => {
+            const codex = formatSessionFull(
+                session(SESSION_ID, 'Do the thing', 'codex'),
+                [message('m1', 'agent-text', 'Done.')],
+                VOICE_CONFIGS.full,
+            )!;
+            expect(codex).toContain('# Coding agent: Codex');
+            expect(codex).toContain('Codex: \n<text>Done.</text>');
+            expect(codex).not.toContain('Claude Code');
+
+            const claude = formatSessionFull(
+                session(SESSION_ID, 'Do the thing', 'claude'),
+                [message('m1', 'agent-text', 'Done.')],
+                VOICE_CONFIGS.minimal,
+            )!;
+            expect(claude).toContain('# Coding agent: Claude Code');
         });
     });
 });
