@@ -1,0 +1,179 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Message } from '@/sync/typesMessage';
+
+/**
+ * These exercise the real hooks — the module-level tier state, the background
+ * detection, and the reduced-context bookkeeping — rather than the pure rules
+ * they delegate to. The gap that matters is the one between "the tier says
+ * background sessions are announced, not transcribed" and "the user then moves
+ * to that session", which only shows up when both are run in sequence.
+ */
+
+const mocks = {
+    state: {
+        sessions: {} as Record<string, any>,
+        sessionMessages: {} as Record<string, any>,
+        settings: { voiceContextMode: 'full' as 'minimal' | 'lite' | 'full' },
+        realtimeMode: 'idle' as string,
+        getActiveSessions: () => Object.values({}) as any[],
+    },
+    focusedSessionId: null as string | null,
+    context: [] as string[],
+    prompts: [] as string[],
+};
+
+vi.mock('@/sync/storage', () => ({
+    storage: {
+        getState: () => mocks.state,
+        subscribe: () => () => {},
+    },
+}));
+
+vi.mock('../RealtimeSession', () => ({
+    getCurrentRealtimeSessionId: () => mocks.focusedSessionId,
+    setCurrentRealtimeSessionId: (id: string) => { mocks.focusedSessionId = id; },
+    isVoiceSessionStarted: () => true,
+    getVoiceSession: () => ({
+        sendContextualUpdate: (update: string) => { mocks.context.push(update); },
+        sendTextMessage: (message: string) => { mocks.prompts.push(message); },
+    }),
+}));
+
+const { voiceHooks } = await import('./voiceHooks');
+
+const A = 'session-a';
+const B = 'session-b';
+
+function message(id: string, text: string): Message {
+    return { id, kind: 'agent-text', createdAt: Number(id), text } as Message;
+}
+
+function addSession(id: string, summary: string, messages: Message[]) {
+    mocks.state.sessions[id] = {
+        id,
+        metadata: { summary: { text: summary }, path: '/home/chiro/project' },
+    };
+    mocks.state.sessionMessages[id] = { messages };
+}
+
+function setTier(mode: 'minimal' | 'lite' | 'full') {
+    mocks.state.settings.voiceContextMode = mode;
+}
+
+beforeEach(() => {
+    voiceHooks.onVoiceStopped();
+    mocks.context.length = 0;
+    mocks.prompts.length = 0;
+    mocks.focusedSessionId = null;
+    mocks.state.sessions = {};
+    mocks.state.sessionMessages = {};
+    mocks.state.getActiveSessions = () => Object.values(mocks.state.sessions);
+    mocks.state.realtimeMode = 'idle';
+    mocks.state.settings.voiceContextMode = 'full';
+    addSession(A, 'Refactor the parser', [message('1', 'A step one'), message('2', 'A step two')]);
+    addSession(B, 'Fix the build', [message('3', 'B step one'), message('4', 'B step two')]);
+});
+
+describe('voiceHooks context tiers', () => {
+    describe('lite', () => {
+        beforeEach(() => {
+            setTier('lite');
+            mocks.focusedSessionId = A;
+        });
+
+        it('gives the focused session its transcript on start', () => {
+            const prompt = voiceHooks.onVoiceStarted(A);
+            expect(prompt).toContain('Available sessions');
+            expect(prompt).toContain('A step one');
+        });
+
+        it('does not inject a background session\u2019s message bodies', () => {
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+            voiceHooks.onMessages(B, [message('9', 'B produced a huge diff')]);
+            expect(mocks.context.join('\n')).not.toContain('B produced a huge diff');
+        });
+
+        it('announces a finished background turn in one line', () => {
+            voiceHooks.onVoiceStarted(A);
+            voiceHooks.onReady(B);
+            const prompt = mocks.prompts.join('\n');
+            expect(prompt).toContain(B);
+            expect(prompt).toContain('finished');
+            // The notice must not drag the transcript in with it.
+            expect(prompt).not.toContain('B step one');
+        });
+
+        it('silences the per-message stream for a background session', () => {
+            voiceHooks.onVoiceStarted(A);
+            voiceHooks.onMessages(B, [message('9', 'partial output')]);
+            // Nothing is announced until the turn's ready event.
+            expect(mocks.prompts).toHaveLength(0);
+        });
+
+        it('upgrades a previously background session once the user moves to it', () => {
+            voiceHooks.onVoiceStarted(A);
+            voiceHooks.onReady(B);
+            expect(mocks.context.join('\n')).not.toContain('B step one');
+
+            mocks.context.length = 0;
+            voiceHooks.onSessionFocus(B);
+            expect(mocks.context.join('\n')).toContain('B step one');
+        });
+
+        it('does not repeat the transcript when focus returns to a full session', () => {
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+            voiceHooks.onSessionFocus(B);
+            mocks.context.length = 0;
+            voiceHooks.onSessionFocus(B);
+            expect(mocks.context.join('\n')).not.toContain('B step one');
+        });
+
+        it('still asks the user about a permission request from any session', () => {
+            voiceHooks.onVoiceStarted(A);
+            voiceHooks.onPermissionRequested(B, 'req-1', 'Bash', { command: 'rm -rf /' });
+            const prompt = mocks.prompts.join('\n');
+            expect(prompt).toContain('req-1');
+            expect(prompt).toContain('Bash');
+        });
+    });
+
+    describe('full', () => {
+        beforeEach(() => {
+            mocks.focusedSessionId = A;
+        });
+
+        it('injects background message bodies, as before', () => {
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+            voiceHooks.onMessages(B, [message('9', 'B produced a huge diff')]);
+            expect(mocks.context.join('\n')).toContain('B produced a huge diff');
+        });
+
+        it('announces a finished background turn with the usual wording', () => {
+            voiceHooks.onVoiceStarted(A);
+            voiceHooks.onReady(B);
+            expect(mocks.prompts.join('\n')).toContain('Report this to the human immediately');
+        });
+    });
+
+    describe('minimal', () => {
+        beforeEach(() => {
+            setTier('minimal');
+            mocks.focusedSessionId = A;
+        });
+
+        it('drops the session directory from the opening prompt', () => {
+            const prompt = voiceHooks.onVoiceStarted(A);
+            expect(prompt).not.toContain('Available sessions');
+        });
+
+        it('keeps the skeleton but not the transcript for the focused session', () => {
+            const prompt = voiceHooks.onVoiceStarted(A);
+            expect(prompt).toContain(A);
+            expect(prompt).toContain('Refactor the parser');
+            expect(prompt).not.toContain('A step one');
+        });
+    });
+});

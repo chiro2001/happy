@@ -25,3 +25,8 @@ tauri = { version = "~2.9", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-http = "2"
 tauri-plugin-opener = "2"
+# Voice: the browser WebSocket constructor cannot set request headers, and
+# DashScope authenticates with `Authorization: Bearer`. Opening the socket in
+# Rust is what lets the desktop build talk to it directly, with no proxy and
+# without the API key ending up in a URL.
+tauri-plugin-websocket = "2"

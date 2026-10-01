@@ -22,6 +22,7 @@
 import { encodeBase64, decodeBase64 } from '@/encryption/base64';
 import type { QwenClientCallbacks, QwenConfig, QwenUsage } from './types';
 import { QWEN_DEFAULTS } from './types';
+import { createDefaultSocket } from './socket';
 
 /** Cap on tool-call round trips inside one user turn, to break feedback loops. */
 const MAX_TOOL_ROUNDS = 5;
@@ -63,25 +64,8 @@ export type WebSocketFactory = (
     headers: Record<string, string>,
 ) => WebSocket;
 
-/**
- * Default factory: React Native's WebSocket with an options bag.
- *
- * The RN typings do not describe the third argument, so the constructor is
- * widened here rather than sprinkled with casts at the call site.
- */
-const reactNativeWebSocketFactory: WebSocketFactory = (url, headers) => {
-    const WS = WebSocket as unknown as {
-        new (
-            url: string,
-            protocols?: string | string[] | null,
-            options?: unknown,
-        ): WebSocket;
-    };
-    return new WS(url, null, { headers });
-};
-
 export interface QwenClientOptions {
-    /** Override the socket implementation. Defaults to React Native's. */
+    /** Override the socket implementation. Defaults to the platform's. */
     createSocket?: WebSocketFactory;
 }
 
@@ -104,7 +88,7 @@ export class QwenRealtimeClient {
     ) {
         this.config = config;
         this.callbacks = callbacks;
-        this.createSocket = options.createSocket ?? reactNativeWebSocketFactory;
+        this.createSocket = options.createSocket ?? createDefaultSocket;
     }
 
     static buildUrl(config: QwenConfig): string {

@@ -42,6 +42,17 @@ interface SessionMetadata {
 let shownSessions = new Set<string>();
 
 /**
+ * Sessions whose context was injected in reduced form because they were in the
+ * background at the time.
+ *
+ * The reduction is not permanent: when the user moves to such a session, its
+ * transcript is worth paying for, because that is the one they are now talking
+ * about. Tracking which sessions got the cheap version is what lets focus
+ * upgrade them instead of leaving them permanently blind.
+ */
+let reducedSessions = new Set<string>();
+
+/**
  * The tier in force for the running voice session.
  *
  * Module state rather than a prop because every one of these hooks is called
@@ -153,6 +164,9 @@ function injectSessionContext(sessionId: string, background = false): string | n
     const config = !shouldInjectMessageBody(currentConfig, background)
         ? { ...currentConfig, MAX_HISTORY_MESSAGES: 0 }
         : currentConfig;
+    if (!shouldInjectMessageBody(currentConfig, background)) {
+        reducedSessions.add(sessionId);
+    }
     return formatSessionFull(session, messages, config);
 }
 
@@ -200,6 +214,13 @@ export const voiceHooks = {
         if (currentConfig.DISABLE_SESSION_FOCUS) return;
         if (getCurrentRealtimeSessionId() === sessionId) return;
         setCurrentRealtimeSessionId(sessionId);
+        // This session may so far have been only announced. Now that it is the
+        // one the user is looking at, hand the assistant its transcript — for
+        // this session the detail is the point, so it is worth its cost.
+        if (reducedSessions.has(sessionId)) {
+            shownSessions.delete(sessionId);
+            reducedSessions.delete(sessionId);
+        }
         // Focus moved to this session, so from here on it is the foreground one
         // and gets the full treatment even in the reporting tiers.
         const ctx = injectSessionContext(sessionId);
@@ -256,6 +277,7 @@ export const voiceHooks = {
             console.log('🎤 Voice session started for:', sessionId);
         }
         shownSessions.clear();
+        reducedSessions.clear();
         pendingPrompts = [];
         ensureModeSubscription();
 
@@ -311,6 +333,7 @@ export const voiceHooks = {
         // no tier behind for other code paths to observe.
         currentConfig = VOICE_CONFIG;
         shownSessions.clear();
+        reducedSessions.clear();
         pendingPrompts = [];
     }
 };
