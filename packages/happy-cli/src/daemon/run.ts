@@ -43,6 +43,23 @@ function shellescape(s: string): string {
     return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
+/**
+ * Whether something else owns this process's lifecycle.
+ *
+ * `INVOCATION_ID` is set by systemd for every process it starts, and it is the
+ * signal that matters here: when a supervisor is responsible for restarting a
+ * failed daemon, the daemon must stop hand-rolling its own replacement, because
+ * the replacement inherits this unit's cgroup and dies with it.
+ *
+ * `HAPPY_DAEMON_SUPERVISED` overrides both ways, for supervisors that do not
+ * set `INVOCATION_ID`.
+ */
+function isSupervised(): boolean {
+    if (process.env.HAPPY_DAEMON_SUPERVISED === '1') return true;
+    if (process.env.HAPPY_DAEMON_SUPERVISED === '0') return false;
+    return typeof process.env.INVOCATION_ID === 'string' && process.env.INVOCATION_ID.length > 0;
+}
+
 // Prepare initial metadata
 // Suffix host with `-dev` for the HAPPY_VARIANT=dev variant so the dev daemon
 // is visually distinct from the stable one in the machine list (they otherwise
@@ -1088,6 +1105,27 @@ export async function startDaemon(): Promise<void> {
         await cleanupDaemonState();
         await releaseDaemonLock(daemonLockHandle);
         await stopCaffeinate();
+
+        // Under a service manager the handoff cannot work, and cannot be made
+        // to: the replacement is spawned into this unit's cgroup, and systemd
+        // tears that cgroup down the instant we exit — so the "new daemon" is
+        // killed before it can take over. Meanwhile our own exit(0) reads as a
+        // clean stop, which is exactly the case `Restart=on-failure` is
+        // configured to ignore. The daemon ends up dead with a log that says it
+        // handed off successfully.
+        //
+        // Exiting non-zero instead hands the restart to the supervisor, which
+        // is what it is already configured to do and produces a genuinely fresh
+        // process rather than one racing its predecessor for the lock. The
+        // cleanup above still matters: the restarted daemon must not find a
+        // stale state file or lock.
+        //
+        // `happy daemon stop` is unaffected — it exits 0, so the supervisor
+        // leaves it down, which is what that path means.
+        if (isSupervised()) {
+          logger.debug('[DAEMON RUN] Supervised: exiting non-zero so the service manager restarts the new bundle');
+          process.exit(1);
+        }
 
         try {
           spawnHappyCLI(['daemon', 'start'], {
