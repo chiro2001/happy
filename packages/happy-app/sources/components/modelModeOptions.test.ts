@@ -120,15 +120,50 @@ describe('modelModeOptions', () => {
         expect(keys).not.toContain('plan');
     });
 
-    it('only offers the curated codex harness models, most capable first', () => {
+    it('offers the curated codex harness models, most capable first', () => {
         const models = getCodexModelModes();
         expect(models.map((model) => model.key)).toEqual([
             'gpt-6-astra',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
+            'deepseek-flash',
+            'deepseek-v4-flash-0731',
+            'deepseek-v4-pro',
+            'glm-5.3-flash',
+            'glm-5.2',
         ]);
         expect(models[0].name).toBe('GPT-6 Astra');
+    });
+
+    /**
+     * The gateway models are listed outright, not left to `includeConfiguredModel`.
+     * That helper only surfaces a model that is already configured, so a fresh
+     * account — settings are stored per server, so a new server starts empty —
+     * had no row for `deepseek-flash` and therefore no way to select it. This is
+     * the regression the user hit after self-hosting.
+     */
+    it('lets a fresh account select the gateway models without a saved override', () => {
+        const models = getCodexModelModes().map((model) => model.key);
+        expect(models).toContain('deepseek-flash');
+
+        // Selected through the picker rather than appended as the configured
+        // one: no override is involved at all.
+        const fromDefaults = includeConfiguredModel('codex', getCodexModelModes(), 'gpt-5.6-sol');
+        expect(fromDefaults.map((model) => model.key)).toContain('deepseek-flash');
+
+        // And the model that was unreachable carries the level that was missing.
+        expect(getEffortLevelsForModel('codex', 'deepseek-flash').map((level) => level.key))
+            .toEqual(['low', 'high', 'max']);
+    });
+
+    it('groups the gateway models under their own providers', () => {
+        const groups = groupModelModesByProvider(getCodexModelModes());
+        expect(groups.map((group) => [group.key, group.title])).toEqual([
+            ['openai', 'OpenAI'],
+            ['deepseek', 'DeepSeek'],
+            ['zhipu', 'Zhipu'],
+        ]);
     });
 
     it('adds a configured custom codex model without expanding the shared catalog', () => {
@@ -136,13 +171,10 @@ describe('modelModeOptions', () => {
         const withCustom = includeConfiguredModel('codex', models, 'my-workspace-model');
 
         expect(withCustom.map((model) => model.key)).toEqual([
-            'gpt-6-astra',
-            'gpt-5.6-sol',
-            'gpt-5.6-terra',
-            'gpt-5.6-luna',
+            ...models.map((model) => model.key),
             'my-workspace-model',
         ]);
-        expect(models).toHaveLength(4);
+        expect(models).toHaveLength(9);
         expect(includeConfiguredModel('claude', models, 'my-workspace-model')).toBe(models);
     });
 
@@ -182,9 +214,12 @@ describe('modelModeOptions', () => {
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     });
 
-    it('falls back to the conservative codex range for an unknown model', () => {
+    it('falls back to a codex range that still reaches max for an unknown model', () => {
         const keys = getEffortLevelsForModel('codex', 'my-workspace-model').map((level) => level.key);
-        expect(keys).toEqual(['low', 'medium', 'high', 'xhigh']);
+        expect(keys).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+        // The row that means "whatever the machine's config says" must be able
+        // to ask for the top of the range; only `ultra` stays declared-only.
+        expect(getEffortLevelsForModel('codex', 'default').map((level) => level.key)).toContain('max');
     });
 
     /**

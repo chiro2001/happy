@@ -176,12 +176,37 @@ export function getClaudeModelModes(): ModelMode[] {
     ];
 }
 
+// Models this machine's Codex reaches through a gateway of its own rather than
+// through OpenAI. The ids are the ones its `model_catalog_json` registry
+// declares — the same file the effort table further down is read from — so a
+// row picked here is a model Codex will actually accept.
+//
+// They have to be listed outright, and cannot be left to `includeConfiguredModel`:
+// that helper only surfaces a model that is *already* the configured one, so
+// before this list existed the picker had no way to reach `deepseek-flash` — the
+// only row offering it was the one that appeared because it was already
+// selected. A fresh account (settings live on the server, so a new server means
+// empty settings) therefore showed OpenAI's four models and nothing else, with
+// no route to the model the machine is actually configured to run.
+//
+// Upstream deliberately keeps this catalog to OpenAI's own models. A fork whose
+// agents run through a gateway needs its own rows; they are grouped by provider
+// so a picker that has both shows them as separate sections.
+const CODEX_GATEWAY_MODEL_MODES: ModelMode[] = [
+    { key: 'deepseek-flash', name: 'DeepSeek Flash', description: 'gateway · fastest', providerId: 'deepseek', providerName: 'DeepSeek' },
+    { key: 'deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash', description: 'gateway · SCNet', providerId: 'deepseek', providerName: 'DeepSeek' },
+    { key: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', description: 'gateway · most capable', providerId: 'deepseek', providerName: 'DeepSeek' },
+    { key: 'glm-5.3-flash', name: 'GLM-5.3 Flash', description: 'gateway · Zhipu', providerId: 'zhipu', providerName: 'Zhipu' },
+    { key: 'glm-5.2', name: 'GLM-5.2', description: 'gateway · Ali', providerId: 'zhipu', providerName: 'Zhipu' },
+];
+
 export function getCodexModelModes(): ModelMode[] {
     return [
         { key: 'gpt-6-astra', name: 'GPT-6 Astra', description: 'most capable', providerId: 'openai', providerName: 'OpenAI' },
         { key: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', description: null, providerId: 'openai', providerName: 'OpenAI' },
         { key: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', description: null, providerId: 'openai', providerName: 'OpenAI' },
         { key: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', description: null, providerId: 'openai', providerName: 'OpenAI' },
+        ...CODEX_GATEWAY_MODEL_MODES,
     ];
 }
 
@@ -555,7 +580,18 @@ const CODEX_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
     'glm-5.2': ['low', 'medium', 'high', 'max'],
     'glm-5.3-flash': ['low', 'high', 'max'],
 };
-const CODEX_EFFORTS_FALLBACK = ['low', 'medium', 'high', 'xhigh'] as const;
+// Every level the table above does not explicitly deny. `max` is in it on
+// purpose: Codex does not validate an effort against the model's declared
+// levels — verified against a live endpoint, `xhigh` ran normally on a model
+// whose registry omits it — so offering a level a model cannot reach costs a
+// downgraded level, while hiding one it can reach blocks the user outright.
+// That asymmetry is why the `initial effort`/`default model` row (key
+// `default`, which resolves to whatever the machine's config says) must not be
+// the one control that cannot ask for the top of the range.
+//
+// `ultra` stays out: it is not one more notch, it is maximum reasoning *with*
+// automatic task delegation, so it is only offered where a registry declares it.
+const CODEX_EFFORTS_FALLBACK = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export function getClaudeEffortLevels(): EffortLevel[] {
     return effortLevels(CLAUDE_EFFORTS);
@@ -567,8 +603,8 @@ export function getAgyEffortLevels(modelKey?: string | null): EffortLevel[] {
 
 /**
  * Codex efforts for one model. An unknown model — a workspace's own, or one
- * newer than this table — gets the conservative set every gpt-5 accepts rather
- * than a guess at the top of its range.
+ * newer than this table — gets the fallback set above rather than a guess at
+ * its exact range.
  */
 export function getCodexEffortLevels(modelKey?: string | null): EffortLevel[] {
     return effortLevels(
