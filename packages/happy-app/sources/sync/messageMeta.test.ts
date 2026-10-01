@@ -85,7 +85,7 @@ describe('resolveMessageModeMeta', () => {
      * the CLI record no permission mode at all, so a freshly opened client has
      * an empty mirror and would be broadcasting a mode change nobody asked for.
      */
-    it('reasserts the codex model and effort without inventing a permission mode', () => {
+    it('sends the codex model, and neither a permission mode nor an effort it was not told', () => {
         const meta = resolveMessageModeMeta({
             permissionMode: null,
             modelMode: null,
@@ -93,14 +93,12 @@ describe('resolveMessageModeMeta', () => {
             metadata: { flavor: 'codex' },
         } as any);
 
-        expect(meta).toEqual({
-            model: 'gpt-5.6-sol',
-            effort: 'medium',
-        });
+        expect(meta).toEqual({ model: 'gpt-5.6-sol' });
         expect(meta.permissionMode).toBeUndefined();
+        expect(meta.effort).toBeUndefined();
     });
 
-    it('always sends the displayed Agy model and effort pair, and no permission mode', () => {
+    it('sends the displayed Agy model, and neither a permission mode nor an effort it was not told', () => {
         const meta = resolveMessageModeMeta({
             permissionMode: null,
             modelMode: null,
@@ -108,11 +106,9 @@ describe('resolveMessageModeMeta', () => {
             metadata: { flavor: 'agy' },
         } as any);
 
-        expect(meta).toEqual({
-            model: 'Gemini 3.8 Flash',
-            effort: 'medium',
-        });
+        expect(meta).toEqual({ model: 'Gemini 3.8 Flash' });
         expect(meta.permissionMode).toBeUndefined();
+        expect(meta.effort).toBeUndefined();
     });
 
     it('sends no permission mode for an unset Codex session, on an old CLI', () => {
@@ -322,11 +318,9 @@ describe('resolveMessageModeMeta', () => {
             metadata: { flavor: 'codex' },
         } as any);
 
-        expect(meta).toEqual({
-            model: 'my-workspace-model',
-            effort: 'medium',
-        });
+        expect(meta).toEqual({ model: 'my-workspace-model' });
         expect(meta.permissionMode).toBeUndefined();
+        expect(meta.effort).toBeUndefined();
     });
 
     it('uses a custom codex model saved in agent settings', () => {
@@ -341,11 +335,9 @@ describe('resolveMessageModeMeta', () => {
             },
         } as any);
 
-        expect(meta).toEqual({
-            model: 'my-workspace-model',
-            effort: 'medium',
-        });
+        expect(meta).toEqual({ model: 'my-workspace-model' });
         expect(meta.permissionMode).toBeUndefined();
+        expect(meta.effort).toBeUndefined();
     });
 
     it('fills unset codex fields from settings while preserving session picks', () => {

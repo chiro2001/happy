@@ -87,4 +87,36 @@ describe('codex message permission mode', () => {
         expect(resolveMessageModeMeta(claude, settings()).permissionMode)
             .toBe('bypassPermissions');
     });
+
+    /**
+     * The same instruction-not-description trap, one field over, and this one
+     * failed silently for hours.
+     *
+     * An effort on a message *changes* the effort — the CLI logs "Effort updated
+     * from user message" versus "kind: retained" for an absent one. The code
+     * default is `medium`, so every message carried it and overrode
+     * `model_reasoning_effort = "max"` from `~/.codex/config.toml`. A live
+     * session's `turn_context` read `effort=medium` while every screen in the
+     * app said max, which is why nothing looked wrong.
+     */
+    it('does not override the agent config with a code-default effort', () => {
+        const meta = resolveMessageModeMeta(codexSession(), settings());
+        expect(meta.effort).toBeUndefined();
+    });
+
+    it('still sends an effort the user picked', () => {
+        const meta = resolveMessageModeMeta(
+            codexSession({ effortLevel: 'max' } as Partial<Session>),
+            settings(),
+        );
+        expect(meta.effort).toBe('max');
+    });
+
+    it('still sends an effort set explicitly in agent settings', () => {
+        const meta = resolveMessageModeMeta(
+            codexSession(),
+            settings({ codex: { effortLevel: 'xhigh' } }),
+        );
+        expect(meta.effort).toBe('xhigh');
+    });
 });

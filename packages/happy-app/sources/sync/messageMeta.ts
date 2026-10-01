@@ -161,7 +161,24 @@ export function resolveMessageModeMeta(
         const modelMode = session.modelMode ?? defaults.modelMode;
         meta.model = modelMode === 'default' ? null : modelMode;
 
-        meta.effort = session.effortLevel ?? defaults.effortLevel;
+        // Same rule as the permission mode above, and for the same reason: an
+        // effort on a message is an instruction to change the effort, and the
+        // CLI says so in its own log — "Effort updated from user message" versus
+        // "kind: retained".
+        //
+        // This one was worse in practice because it failed silently. The code
+        // default is `medium`, so every message carried `medium` and quietly
+        // overrode whatever the agent was actually configured with — including
+        // `model_reasoning_effort = "max"` in `~/.codex/config.toml`. The
+        // session ran at `medium` while every surface said `max`, which is
+        // exactly the class of bug that is impossible to notice from the UI.
+        //
+        // A pick, or an explicit per-agent override, is still sent: those are
+        // choices, and re-asserting them survives Codex resetting its mode.
+        const chosenEffort = session.effortLevel ?? override.effortLevel;
+        if (chosenEffort !== undefined && chosenEffort !== null) {
+            meta.effort = chosenEffort;
+        }
         return meta;
     }
 
