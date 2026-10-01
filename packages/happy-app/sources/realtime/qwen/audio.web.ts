@@ -21,6 +21,35 @@ import { QWEN_DEFAULTS } from './types';
 const CHUNK_SAMPLES = QWEN_DEFAULTS.inputSampleRate / 10;
 
 /**
+ * Microphone constraints, in one place because they are requested twice.
+ *
+ * The same constraints have to be used for the permission check and for the
+ * capture itself. Asking for `{ audio: true }` first and the real constraints
+ * second would give two different streams, and the one actually used for the
+ * session would be whatever the browser decided rather than what was asked
+ * for — which for echo cancellation is the difference between barge-in working
+ * and the model answering its own voice.
+ */
+const CAPTURE_CONSTRAINTS: MediaStreamConstraints = {
+    audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+    },
+};
+
+/**
+ * The stream returned by the permission check, held until the capture starts.
+ *
+ * `startRealtimeSession` asks for permission before the socket exists, and the
+ * capture begins later, once the server has accepted the session. Re-asking in
+ * between shows a second permission dialog on platforms that do not remember
+ * the first answer, so the granted stream is handed over instead.
+ */
+let preGrantedStream: MediaStream | null = null;
+
+/**
  * The same 100 ms expressed in the rate the AudioContext actually runs at.
  *
  * A browser is free to ignore the requested sample rate, and the common case is
@@ -127,13 +156,17 @@ export class QwenAudioCapture {
      */
     static async requestPermission(): Promise<boolean> {
         try {
-            // Enumerate rather than re-prompt where the API allows it. There is
-            // no reliable "just check" call across WebView2 and mobile Safari,
-            // so a short-lived acquisition is the check.
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            stream.getTracks().forEach(track => track.stop());
+            // There is no reliable "just check" call across WebView2 and mobile
+            // Safari, so acquiring the stream is the check — but the stream is
+            // kept rather than stopped, because the capture that follows wants
+            // exactly this one and a second request would be a second prompt.
+            if (preGrantedStream?.getTracks().some(track => track.readyState === 'live')) {
+                return true;
+            }
+            preGrantedStream = await navigator.mediaDevices.getUserMedia(CAPTURE_CONSTRAINTS);
             return true;
         } catch {
+            preGrantedStream = null;
             return false;
         }
     }
@@ -148,6 +181,15 @@ export class QwenAudioCapture {
     async start(options: AudioCaptureOptions): Promise<void> {
         if (this.running) return;
 
+        // Claimed before the first await. `openCapture` checks it again after
+        // the stream arrives, which is how a `stop()` that lands while the
+        // permission prompt is open is honoured. Leaving this out is not a
+        // cosmetic bug: the post-await check then always sees `false`, stops
+        // the stream it just acquired, and the session runs with a microphone
+        // that is open and immediately closed again — the server hears silence
+        // and never answers.
+        this.running = true;
+
         // Deliberately does not reject: the session calls this without awaiting
         // (the native backend is synchronous), so a rejection here would be an
         // unhandled promise and the failure would vanish.
@@ -160,18 +202,13 @@ export class QwenAudioCapture {
     }
 
     private async openCapture(options: AudioCaptureOptions): Promise<void> {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                // The three constraints that make barge-in work. Echo
-                // cancellation is the load-bearing one; without it the model
-                // hears itself through the speakers and replies to its own
-                // voice, which is the failure the Android AEC patch fixes.
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                channelCount: 1,
-            },
-        });
+        // The permission check usually ran first and left its stream here. It
+        // carries the echo-cancellation constraints that make barge-in work —
+        // without them the model hears itself through the speakers and replies
+        // to its own voice, which is the failure the Android AEC patch fixes.
+        const stream = preGrantedStream
+            ?? await navigator.mediaDevices.getUserMedia(CAPTURE_CONSTRAINTS);
+        preGrantedStream = null;
         if (!this.running) {
             // stop() landed while the permission prompt was open.
             stream.getTracks().forEach(track => track.stop());
@@ -185,6 +222,13 @@ export class QwenAudioCapture {
         this.context = context;
         this.source = context.createMediaStreamSource(stream);
 
+        // Both processors only run while they reach a destination, and the
+        // microphone must not be one of them. A muted gain node satisfies the
+        // first requirement without duplicating the mic into the speakers.
+        const sink = context.createGain();
+        sink.gain.value = 0;
+        sink.connect(context.destination);
+
         try {
             const url = URL.createObjectURL(
                 new Blob([CAPTURE_WORKLET], { type: 'application/javascript' }),
@@ -197,17 +241,12 @@ export class QwenAudioCapture {
                 this.accept(event.data as Float32Array, options);
             };
             this.source.connect(worklet);
-            // A worklet only runs while it is part of the graph. Sending its
-            // output to a muted gain node keeps it alive without duplicating
-            // the microphone into the speakers.
-            const sink = context.createGain();
-            sink.gain.value = 0;
             worklet.connect(sink);
-            sink.connect(context.destination);
             this.worklet = worklet;
-        } catch {
+        } catch (error) {
             // Older WebView: fall back to the deprecated main-thread processor.
             // Audible glitches are preferable to a microphone that never opens.
+            console.warn('[Qwen voice] AudioWorklet unavailable, using ScriptProcessor:', error);
             const processor = context.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (event) => {
                 if (!this.running) return;
@@ -215,7 +254,7 @@ export class QwenAudioCapture {
                 this.accept(new Float32Array(frame), options);
             };
             this.source.connect(processor);
-            processor.connect(context.destination);
+            processor.connect(sink);
             this.processor = processor;
         }
     }
@@ -262,6 +301,13 @@ export class QwenAudioCapture {
 
     stop(): void {
         this.running = false;
+        // A stream granted for a capture that never started would otherwise
+        // hold the microphone open — and keep the OS "in use" indicator on —
+        // for the rest of the session.
+        if (preGrantedStream) {
+            preGrantedStream.getTracks().forEach(track => track.stop());
+            preGrantedStream = null;
+        }
         this.pending = [];
         this.pendingLength = 0;
         try {
