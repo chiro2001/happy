@@ -91,7 +91,16 @@ function createTauriSocket(url: string, headers: Record<string, string>): WebSoc
                 // arrive here are the frames a protocol handshake produces,
                 // and a connection that never resolves should not accumulate
                 // them for the life of the app.
-                if (this.outbox.length < 32) this.outbox.push(data);
+                if (this.outbox.length < 32) {
+                    this.outbox.push(data);
+                    // Logged because this is the only visible sign of the race
+                    // being present: without it, a run that takes this path and
+                    // a run that does not are indistinguishable in the log, and
+                    // the whole failure mode is silence.
+                    console.log(
+                        '[Qwen voice] websocket: holding a frame until the connection id arrives',
+                    );
+                }
                 return;
             }
             // The plugin rejects on a dead socket; the client already treats a
@@ -167,6 +176,11 @@ function createTauriSocket(url: string, headers: Record<string, string>): WebSoc
             // these cannot be fire-and-forget.
             const pending = socket.outbox;
             socket.outbox = [];
+            if (pending.length > 0) {
+                console.log(
+                    `[Qwen voice] websocket: flushed ${pending.length} held frame(s)`,
+                );
+            }
             for (const data of pending) {
                 void invoke('plugin:websocket|send', {
                     id,
