@@ -385,7 +385,16 @@ describe('mapCodexMcpMessageToSessionEnvelopes', () => {
         );
 
         expect(started.envelopes).toHaveLength(2);
-        expect(started.envelopes[0].ev).toEqual({ t: 'start', title: 'Auth explorer' });
+        // `threadId` rides along so a client can later `thread/read` or
+        // `thread/fork` this agent; the derived `subagent` id cannot be turned
+        // back into it. `parentThreadId` is absent here because this event did
+        // not come with one — the live path fills it from the notification
+        // envelope, which is where the hierarchy comes from.
+        expect(started.envelopes[0].ev).toEqual({
+            t: 'start',
+            title: 'Auth explorer',
+            threadId: 'provider-child-thread',
+        });
         expect(started.envelopes[0].subagent).toBeDefined();
         expect(isCuid(started.envelopes[0].subagent!)).toBe(true);
         expect(started.envelopes[1]).toMatchObject({

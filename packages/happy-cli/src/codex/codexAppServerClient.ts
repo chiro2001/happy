@@ -362,6 +362,28 @@ export class CodexAppServerClient {
         });
     }
 
+    /**
+     * Which subagent a notification belongs to, for spreading into its event.
+     *
+     * Codex runs each subagent on its own thread, and the only place that shows
+     * up is the notification envelope's `threadId` — the item payload itself
+     * carries nothing (verified against a real spawn: every item from a child
+     * thread had zero subagent fields on it). Without lifting this out, the
+     * child's commands and messages are indistinguishable from the parent's,
+     * and everything lands in one timeline.
+     *
+     * The raw thread id travels, not a derived id: it is what `thread/read` and
+     * `thread/fork` need later, and the mapper turns it into the stable session
+     * -protocol id on its side.
+     */
+    private childThreadScope(params: unknown): { subagent?: string } {
+        const threadId = stringOrNull((params as { threadId?: unknown } | undefined)?.threadId);
+        if (!threadId || threadId === this._threadId) {
+            return {};
+        }
+        return { subagent: threadId };
+    }
+
     private handleRawNotification(method: string, params: any): boolean {
         if (!this.shouldHandleRawNotification(method)) {
             return false;
@@ -449,6 +471,7 @@ export class CodexAppServerClient {
                 command: item.command,
                 cwd: item.cwd,
                 description: item.command,
+                ...this.childThreadScope(params),
             });
             return true;
         }
@@ -466,6 +489,7 @@ export class CodexAppServerClient {
                 status: item.status,
                 cwd: item.cwd,
                 command: item.command,
+                ...this.childThreadScope(params),
             });
             return true;
         }
@@ -486,6 +510,7 @@ export class CodexAppServerClient {
                     call_id: itemKey,
                     callId: itemKey,
                     changes: changes ?? {},
+                    ...this.childThreadScope(params),
                 });
                 return true;
             }
@@ -496,6 +521,7 @@ export class CodexAppServerClient {
                     call_id: itemKey,
                     callId: itemKey,
                     status: item.status,
+                    ...this.childThreadScope(params),
                 });
 
                 if (itemId && (item.status === 'completed' || item.status === 'failed' || item.status === 'declined')) {
@@ -570,6 +596,14 @@ export class CodexAppServerClient {
                     agentThreadId: item.agentThreadId,
                     agent_path: item.agentPath,
                     agentPath: item.agentPath,
+                    // The thread this activity was *reported on* — the
+                    // subagent's parent, not the subagent. A grandchild's
+                    // activity arrives on its parent's thread, so this is what
+                    // makes the hierarchy recoverable: without it the client
+                    // can see that agents exist but not who spawned whom, and a
+                    // nested run flattens into a list.
+                    parent_thread_id: threadId,
+                    parentThreadId: threadId,
                 });
             }
             return true;
@@ -583,6 +617,7 @@ export class CodexAppServerClient {
                     message: text,
                     item_id: item.id,
                     phase: item.phase,
+                    ...this.childThreadScope(params),
                 });
             }
 

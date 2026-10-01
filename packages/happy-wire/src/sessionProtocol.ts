@@ -102,6 +102,22 @@ export const sessionTurnStartEventSchema = z.object({
 export const sessionStartEventSchema = z.object({
   t: z.literal('start'),
   title: z.string().optional(),
+  /**
+   * The agent's own thread id — the handle `thread/read` and `thread/fork`
+   * need. The envelope's `subagent` is a derived, storable id; this is the
+   * provider's, and it is not recoverable from the derived one.
+   */
+  threadId: z.string().optional(),
+  /**
+   * The thread this agent was reported on: its parent, or the session's own
+   * thread when it was spawned by the main agent.
+   *
+   * Carried because nesting is real — a subagent can spawn its own subagents
+   * (measured four levels deep on this machine) — and nothing else in the
+   * stream says who spawned whom. Without it the client can list the agents but
+   * cannot draw the tree, so a nested run flattens.
+   */
+  parentThreadId: z.string().optional(),
 });
 
 export const sessionTurnEndStatusSchema = z.enum(['completed', 'failed', 'cancelled']);

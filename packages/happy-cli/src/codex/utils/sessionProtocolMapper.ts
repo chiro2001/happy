@@ -98,6 +98,19 @@ function maybeEmitSubagentStart(
     activeSubagents: Set<string>,
     subagentTitles: Map<string, string>,
     envelopes: SessionEnvelope[],
+    /**
+     * Where this agent came from, when the caller knows. `threadId` is the
+     * agent's own thread — the handle `thread/read` and `thread/fork` need, and
+     * not recoverable from the derived `subagent` id; `parentThreadId` is the
+     * thread it was reported on.
+     *
+     * Optional because only the activity events carry this authoritatively, and
+     * they arrive first in practice (measured: activity at +2640ms, the child's
+     * first command at +3748ms). A `start` that arrives without it is still
+     * correct, just less informative, and a later activity for the same agent
+     * carries the same `start` guard so nothing is re-emitted.
+     */
+    origin?: { threadId?: string; parentThreadId?: string },
 ): void {
     if (!subagent || startedSubagents.has(subagent)) {
         return;
@@ -107,6 +120,8 @@ function maybeEmitSubagentStart(
     envelopes.push(createEnvelope('agent', {
         t: 'start',
         ...(title ? { title } : {}),
+        ...(origin?.threadId ? { threadId: origin.threadId } : {}),
+        ...(origin?.parentThreadId ? { parentThreadId: origin.parentThreadId } : {}),
     }, { ...opts, subagent }));
     startedSubagents.add(subagent);
     activeSubagents.add(subagent);
@@ -390,7 +405,20 @@ function resolveCollabProviderIds(
         return stateThreadIds;
     }
 
-    return [call];
+    // No target named. Return nothing rather than the tool-call id.
+    //
+    // The fallback used to be `[call]`, which invented an id from the *tool
+    // call* and registered it as a subagent. That produced a second,
+    // incompatible identity for the same agent: `subAgentActivity` derives its
+    // id from the child thread, so the two never matched, and the tool card's
+    // `sessionSubagent` pointed at an id no message would ever carry.
+    //
+    // It fires more often than it looks: a `wait` on an agent that was spawned
+    // elsewhere in the turn arrives with `receiverThreadIds: []` and
+    // `agentsStates: {}` (measured). Naming nobody is the honest answer — the
+    // authoritative registration comes from `subAgentActivity`, which always
+    // carries the child thread.
+    return [];
 }
 
 function resolveCollabTool(
@@ -862,6 +890,11 @@ export function mapCodexThreadItemToSessionEnvelopes(
             if (agentPath) {
                 subagentTitles.set(sessionSubagent, agentPath);
             }
+            // Backfill reads one thread at a time, so it has the child's id but
+            // not which thread the activity was reported on — the item does not
+            // carry it. The client falls back to the parent implied by
+            // `agentPath`, which is a path and therefore says the same thing.
+            const origin = { threadId: providerSubagent };
             const opts = {
                 turn: turn.id,
                 time: startedAt,
@@ -875,6 +908,7 @@ export function mapCodexThreadItemToSessionEnvelopes(
                 activeSubagents,
                 subagentTitles,
                 envelopes,
+                origin,
             );
             maybeEmitSubagentActivityService(envelopes, itemRecord.kind, agentPath, opts, sessionSubagent);
             if (itemRecord.kind === 'interrupted') {
@@ -1161,6 +1195,13 @@ function mapCodexMcpMessageToSessionEnvelopesInner(message: Record<string, unkno
         if (agentPath) {
             subagentTitles.set(sessionSubagent, agentPath);
         }
+        // `providerSubagent` is the child's own thread; `parent_thread_id` is
+        // whichever thread this activity was reported on, which for a
+        // grandchild is its parent rather than the session root.
+        const origin = {
+            threadId: providerSubagent,
+            parentThreadId: pickString(message.parent_thread_id ?? message.parentThreadId),
+        };
         const turnOpts = buildEnvelopeOptions(state.currentTurnId);
         const envelopes: SessionEnvelope[] = [];
         maybeEmitSubagentStart(
@@ -1170,6 +1211,7 @@ function mapCodexMcpMessageToSessionEnvelopesInner(message: Record<string, unkno
             activeSubagents,
             subagentTitles,
             envelopes,
+            origin,
         );
         maybeEmitSubagentActivityService(envelopes, message.kind, agentPath, turnOpts, sessionSubagent);
         if (message.kind === 'interrupted') {
