@@ -196,6 +196,28 @@ export function formatCompletionNotice(
     );
 }
 
+/**
+ * One line naming the session the user is looking at right now.
+ *
+ * Sent whenever focus changes, and included in the opening brief, so the
+ * assistant always has a current answer. The id is necessary — it is what
+ * `sendMessageToSession` takes — but the summary is what lets the assistant
+ * talk about the session without reading an opaque string out loud.
+ */
+export function formatCurrentSession(
+    sessionId: string | null,
+    summary?: string | null,
+): string {
+    if (!sessionId) {
+        return 'Current session: none. Ask the user which session they mean.';
+    }
+    const name = summary?.trim() ? ` ("${summary.trim()}")` : '';
+    return (
+        `Current session: ${sessionId}${name}. `
+        + `Send messages here unless the user names a different session.`
+    );
+}
+
 export function formatSessionOffline(sessionId: string, metadata?: SessionMetadata): string {
     return `Session went offline: ${sessionId}`;
 }
@@ -204,8 +226,34 @@ export function formatSessionOnline(sessionId: string, metadata?: SessionMetadat
     return `Session came online: ${sessionId}`;
 }
 
-export function formatSessionFocus(sessionId: string, metadata?: SessionMetadata): string {
-    return `Session became focused: ${sessionId}`;
+/**
+ * Tell the assistant that the current session changed.
+ *
+ * The wording matters more than it looks. The earlier version said only
+ * "Session became focused: X", which announces an event without stating the
+ * fact that matters: that X is now the one the user is looking at, and the one
+ * a message with no session named should go to. With only the event to go on,
+ * the model kept sending to whichever session it had been told about first —
+ * so switching sessions mid-call silently delivered the user's next instruction
+ * to the previous session.
+ *
+ * The summary is included because "current session" is otherwise an opaque id,
+ * and the model has to answer questions like "which session am I on?" out loud
+ * without reading ids to the user.
+ */
+export function formatSessionFocus(
+    sessionId: string,
+    metadata?: SessionMetadata,
+): string {
+    const summary = metadata?.summary?.text?.trim();
+    const name = summary ? ` ("${summary}")` : '';
+    return (
+        `Current session changed to: ${sessionId}${name}. `
+        + `This is now the session the user is looking at, and the one to send `
+        + `messages to when the user does not name a different session. `
+        + `Forget the previous current session; anything it reports from now on `
+        + `is a background update.`
+    );
 }
 
 export function formatReadyEvent(

@@ -136,9 +136,21 @@ function toSessionOptions(config: VoiceSessionConfig, tools: unknown[]) {
     const stopInstruction =
         '\n\n【重要】当用户要求你停止说话（例如说“停止”“停下”“别说了”）时，'
         + '必须立刻保持安静，不要回复任何内容，也不要确认收到。';
+
+    // The context states which session is current, but a rule is cheaper to
+    // follow than an inference. Without it the model treated "current session"
+    // as roughly whichever session it had been talking about, and a switch
+    // mid-call went unnoticed until the user noticed for it.
+    const routingInstruction =
+        '\n\n【会话路由】上下文里的「Current session」就是用户此刻正在看的会话，'
+        + '也是没有点名其他会话时消息的默认去处。'
+        + '当它发生变化时，以最新的那条为准，不要沿用之前的会话；'
+        + '之前的会话此后的产出都只是后台更新。'
+        + '用户说「这个会话」「当前会话」时，一律指这一条。';
+
     const instructions = config.systemPrompt
-        ? config.systemPrompt + stopInstruction
-        : stopInstruction.trim();
+        ? config.systemPrompt + stopInstruction + routingInstruction
+        : (stopInstruction + routingInstruction).trim();
 
     return {
         instructions,

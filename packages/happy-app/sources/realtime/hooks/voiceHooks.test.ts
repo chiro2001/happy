@@ -121,6 +121,43 @@ describe('voiceHooks context tiers', () => {
             expect(mocks.context.join('\n')).toContain('B step one');
         });
 
+        it('tells the assistant which session is current when focus moves', () => {
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+
+            voiceHooks.onSessionFocus(B);
+
+            const sent = mocks.context.join('\n');
+            // The fact the model needs: B is where messages go now. The old
+            // wording only announced the event, which left it guessing — and it
+            // guessed the session from the start of the call, so a real
+            // instruction was delivered to the wrong window.
+            expect(sent).toContain('Current session: session-b');
+            expect(sent).toContain('Send messages here');
+            expect(sent).not.toContain('Current session: session-a');
+        });
+
+        it('names the current session in the opening brief', () => {
+            const prompt = voiceHooks.onVoiceStarted(A);
+            expect(prompt).toContain('Current session: session-a');
+        });
+
+        it('routes by name even where the session list is withheld', () => {
+            // minimal carries no session directory, so the current-session line
+            // is the only thing in its context that names a session. Without it
+            // the model has an id to message and no way to know it is the right
+            // one, which is how a switch went unnoticed.
+            setTier('minimal');
+            mocks.focusedSessionId = A;
+            const brief = voiceHooks.onVoiceStarted(A);
+            expect(brief).not.toContain('Available sessions');
+            expect(brief).toContain('Current session: session-a');
+
+            mocks.context.length = 0;
+            voiceHooks.onSessionFocus(B);
+            expect(mocks.context.join('\n')).toContain('Current session: session-b');
+        });
+
         it('does not repeat the transcript when focus returns to a full session', () => {
             voiceHooks.onVoiceStarted(A);
             mocks.context.length = 0;

@@ -3,7 +3,11 @@ import { sync } from '@/sync/sync';
 import { sessionAllow, sessionDeny } from '@/sync/ops';
 import { storage } from '@/sync/storage';
 import { trackVoicePermissionResponse } from '@/track';
-import { getVoiceSession, isVoiceSessionStarted } from './RealtimeSession';
+import {
+    getCurrentRealtimeSessionId,
+    getVoiceSession,
+    isVoiceSessionStarted,
+} from './RealtimeSession';
 import {
     getVoiceMessageCount,
     incrementVoiceMessageCount,
@@ -29,7 +33,28 @@ export const realtimeClientTools = {
             return "error (invalid parameters)";
         }
 
-        const { sessionId, message } = parsed.data;
+        const { message } = parsed.data;
+        let { sessionId } = parsed.data;
+
+        // A session id that is not one of ours means the model invented it or
+        // is working from a stale picture of the session list. Falling back to
+        // the focused session is the right repair: the user's instruction was
+        // meant for the session they are looking at. The alternative — refusing
+        // — loses the instruction, and the previous behaviour of sending to
+        // whatever id came back is how a message ended up in the wrong window.
+        if (!storage.getState().sessions[sessionId]) {
+            const focused = getCurrentRealtimeSessionId();
+            console.warn(
+                '📤 sendMessageToSession: unknown session',
+                sessionId,
+                focused ? `→ falling back to focused ${focused}` : '→ no focused session',
+            );
+            if (!focused || !storage.getState().sessions[focused]) {
+                return "error (that session is not available; ask the user which session to use)";
+            }
+            sessionId = focused;
+        }
+
         console.log('📤 Sending message to session:', sessionId);
         await sync.sendMessage(sessionId, message, { source: 'voice' });
         incrementVoiceMessageCount();

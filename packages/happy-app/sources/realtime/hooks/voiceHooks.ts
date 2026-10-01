@@ -1,6 +1,7 @@
 import { getCurrentRealtimeSessionId, getVoiceSession, isVoiceSessionStarted, setCurrentRealtimeSessionId } from '../RealtimeSession';
 import {
     formatCompletionNotice,
+    formatCurrentSession,
     formatNewMessages,
     formatPermissionRequest,
     formatReadyEvent,
@@ -92,6 +93,25 @@ function isBackgroundSession(sessionId: string): boolean {
  */
 function agentNameFor(sessionId: string): string {
     return resolveAgentName(storage.getState().sessions[sessionId]?.metadata?.flavor);
+}
+
+/**
+ * Say which session is current, in a line the assistant can act on.
+ *
+ * The prompt already describes the rule — "the last focused session is where
+ * requests usually go" — but never which session that is, so the model has to
+ * infer it. In practice it inferred wrong: after the user switched sessions
+ * mid-call it kept messaging the session it had been introduced to first, which
+ * meant a real instruction landed in the wrong window. Stating the current
+ * session outright removes the guess.
+ *
+ * Sent on every focus change rather than only at the start, because a fact that
+ * was true when the call began is not a fact the model should have to
+ * invalidate on its own.
+ */
+function sendCurrentSession(sessionId: string) {
+    const summary = storage.getState().sessions[sessionId]?.metadata?.summary?.text;
+    sendContext(formatCurrentSession(sessionId, summary));
 }
 
 // Prompt queue — batched text messages that trigger agent responses
@@ -228,6 +248,10 @@ export const voiceHooks = {
         if (currentConfig.DISABLE_SESSION_FOCUS) return;
         if (getCurrentRealtimeSessionId() === sessionId) return;
         setCurrentRealtimeSessionId(sessionId);
+        // Stated separately from the event below, and unconditionally: the
+        // minimal tier carries no session directory, so without this line
+        // nothing in its context names a session and a switch goes unnoticed.
+        sendCurrentSession(sessionId);
         // This session may so far have been only announced. Now that it is the
         // one the user is looking at, hand the assistant its transcript — for
         // this session the detail is the point, so it is worth its cost.
@@ -315,6 +339,15 @@ export const voiceHooks = {
         if (ctx) {
             prompt += 'CURRENT SESSION:\n\n' + ctx;
         }
+
+        // Stated in the brief as well as on every change, so the answer exists
+        // from the first turn rather than only after the user switches. This is
+        // also what minimal relies on: it carries no session directory, so
+        // without this line nothing in its context names a session at all.
+        prompt += '\n\n' + formatCurrentSession(
+            sessionId,
+            storage.getState().sessions[sessionId]?.metadata?.summary?.text,
+        );
 
         return prompt;
     },
