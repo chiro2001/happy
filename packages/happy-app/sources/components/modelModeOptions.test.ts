@@ -187,6 +187,26 @@ describe('modelModeOptions', () => {
         expect(keys).toEqual(['low', 'medium', 'high', 'xhigh']);
     });
 
+    /**
+     * A model reached through a gateway is not a gpt-5, so the fallback
+     * describes it wrongly in both directions: these declare `max` and do not
+     * declare `xhigh`, which is the exact opposite of the conservative set. The
+     * visible effect was a picker that offered a level the model rejects and hid
+     * the one the user wanted.
+     */
+    it('offers gateway-served models their own levels, including max', () => {
+        expect(getEffortLevelsForModel('codex', 'deepseek-flash').map((level) => level.key))
+            .toEqual(['low', 'high', 'max']);
+        expect(getEffortLevelsForModel('codex', 'deepseek-v4-pro').map((level) => level.key))
+            .toEqual(['low', 'high', 'max']);
+        expect(getEffortLevelsForModel('codex', 'glm-5.2').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high', 'max']);
+        // The one that was missing, named explicitly: this is what the user
+        // could not select.
+        expect(getEffortLevelsForModel('codex', 'deepseek-flash').map((level) => level.key))
+            .toContain('max');
+    });
+
     it('offers claude the SDK effort union for every model', () => {
         // Claude's scale belongs to the SDK, not the model: an unreachable level
         // is silently downgraded, so every model gets the same list.

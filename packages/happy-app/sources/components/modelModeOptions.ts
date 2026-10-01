@@ -538,6 +538,22 @@ const CODEX_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
     'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
+    // Models served through a local gateway rather than by OpenAI. Their levels
+    // come from the same kind of registry entry as the ones above — a
+    // `model_catalog_json` file the user maintains — so they are listed here
+    // with exactly what that registry declares.
+    //
+    // They need listing because the fallback below is deliberately the
+    // conservative gpt-5 set, which has no `max`. A model reached through a
+    // gateway is by definition not a gpt-5, so the fallback describes it
+    // wrongly: `deepseek-flash` has no `xhigh` and does have `max`, and the
+    // fallback said the opposite on both counts. The visible effect was a
+    // picker that offered `xhigh` and hid `max` for a model that accepts `max`.
+    'deepseek-flash': ['low', 'high', 'max'],
+    'deepseek-v4-flash-0731': ['low', 'high', 'max'],
+    'deepseek-v4-pro': ['low', 'high', 'max'],
+    'glm-5.2': ['low', 'medium', 'high', 'max'],
+    'glm-5.3-flash': ['low', 'high', 'max'],
 };
 const CODEX_EFFORTS_FALLBACK = ['low', 'medium', 'high', 'xhigh'] as const;
 
