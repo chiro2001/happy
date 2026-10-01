@@ -36,7 +36,7 @@ import {
 } from './utils/sessionProtocolMapper';
 import { resumeExistingThread } from './resumeExistingThread';
 import { emitReadyIfIdle } from './emitReadyIfIdle';
-import { enqueueCodexUserText, isCodexClearText } from './codexClearCommand';
+import { enqueueCodexUserText, isCodexClearText, isCodexCompactText } from './codexClearCommand';
 import { downloadCodexFileEventAttachment } from './utils/attachmentEvents';
 import { prepareCodexImageInputItems } from './utils/imageInput';
 import { createSerialAsyncHandler } from './utils/serialAsyncHandler';
@@ -341,6 +341,8 @@ export async function runCodex(opts: {
         });
         if (enqueueResult === 'clear') {
             logger.debug('[Codex] /clear command pushed to isolated queue');
+        } else if (enqueueResult === 'compact') {
+            logger.debug('[Codex] /compact command pushed as a compaction request');
         }
     }, (error) => {
         logger.warn('[Codex] Failed to handle user message', {
@@ -689,6 +691,13 @@ export async function runCodex(opts: {
         // Add messages to the ink UI buffer based on message type
         if (msg.type === 'agent_message') {
             messageBuffer.addMessage((msg as any).message, 'assistant');
+        } else if (msg.type === 'context_compaction_started') {
+            messageBuffer.addMessage('Compacting context…', 'status');
+        } else if (msg.type === 'context_compacted') {
+            // The only signal that the work actually finished. The RPC that
+            // started it resolves much earlier, on acceptance.
+            messageBuffer.addMessage('Context compacted', 'status');
+            session.sendSessionEvent({ type: 'message', message: 'Context compacted' });
         } else if (msg.type === 'agent_reasoning_delta') {
             // Skip reasoning deltas in the UI to reduce noise
         } else if (msg.type === 'agent_reasoning' && !isSubagentScopedEvent) {
@@ -900,6 +909,49 @@ export async function runCodex(opts: {
             // Defensive check for TS narrowing
             if (!message) {
                 break;
+            }
+
+            if (isCodexCompactText(message.message)) {
+                // Compaction is its own app-server operation, not a turn. Sending
+                // it as text — which is what used to happen — asks the model to
+                // summarise itself while the context stays exactly as large: on a
+                // live thread the input went from 573,988 to 575,019 tokens across
+                // the "compaction". This branch calls the real thing.
+                if (!client.hasActiveThread()) {
+                    // Nothing to compact yet. Say so rather than starting a
+                    // thread just to compact its empty context.
+                    messageBuffer.addMessage('Nothing to compact yet', 'status');
+                    session.sendSessionEvent({ type: 'message', message: 'Nothing to compact yet' });
+                    emitReadyIfIdle({
+                        pending,
+                        queueSize: () => messageQueue.size(),
+                        shouldExit,
+                        sendReady,
+                    });
+                    continue;
+                }
+
+                logger.debug('[Codex] Handling /compact command - requesting context compaction');
+                messageBuffer.addMessage('Compacting context…', 'status');
+                session.sendSessionEvent({ type: 'message', message: 'Compacting context…' });
+                // The RPC resolves when the server *accepts* the request, and
+                // completion arrives later as a `context_compacted` event, so
+                // nothing here may report success on its own.
+                try {
+                    await client.compactThread();
+                } catch (error) {
+                    const detail = error instanceof Error ? error.message : String(error);
+                    logger.warn('[Codex] Context compaction request failed', { detail });
+                    messageBuffer.addMessage(`Compaction failed: ${detail}`, 'status');
+                    session.sendSessionEvent({ type: 'message', message: `Compaction failed: ${detail}` });
+                }
+                emitReadyIfIdle({
+                    pending,
+                    queueSize: () => messageQueue.size(),
+                    shouldExit,
+                    sendReady,
+                });
+                continue;
             }
 
             if (isCodexClearText(message.message)) {

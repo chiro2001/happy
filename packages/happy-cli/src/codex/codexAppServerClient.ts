@@ -210,6 +210,16 @@ function normalizeRawFileChangeList(changes: unknown): LegacyPatchChanges | unde
     return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+/**
+ * Timeout for `thread/compact/start`, in ms.
+ *
+ * Far above the default RPC timeout because the summarisation model has to read
+ * the whole context, and the threads that most need compacting are the ones
+ * where that takes minutes. Abandoning the request at 30s would leave the
+ * server compacting while the client reported a failure.
+ */
+const COMPACT_TIMEOUT_MS = 10 * 60_000;
+
 export class CodexAppServerClient {
     private process: ChildProcess | null = null;
     private readline: ReadlineInterface | null = null;
@@ -584,6 +594,22 @@ export class CodexAppServerClient {
                     `${method}:final_answer`,
                 );
             }
+            return true;
+        }
+
+        // Compaction is not part of a turn: it runs on demand and reports its
+        // progress as its own item type. Without these branches the item falls
+        // through to the catch-all below and is silently swallowed, leaving the
+        // user with no way to tell a finished compaction from a stuck one — the
+        // compaction that produced this code took well over a second on a
+        // 575k-token thread, and a large one runs for minutes.
+        if ((method === 'item/started' || method === 'item/completed') && item.type === 'contextCompaction') {
+            const completed = method === 'item/completed';
+            logger.debug(`[CodexAppServer] Context compaction ${completed ? 'completed' : 'started'}`);
+            this.eventHandler?.({
+                type: completed ? 'context_compacted' : 'context_compaction_started',
+                item_id: item.id,
+            });
             return true;
         }
 
@@ -1199,6 +1225,36 @@ export class CodexAppServerClient {
         };
         this.pendingInterrupt = doInterrupt();
         return this.pendingInterrupt;
+    }
+
+    /**
+     * Ask the app-server to compact this thread's context.
+     *
+     * Compaction is a first-class operation in the app-server protocol
+     * (`thread/compact/start`), separate from `turn/start`. That separation is
+     * the whole point: a `/compact` sent as ordinary turn input is just a
+     * message asking the model to summarise itself, and the model complies
+     * while the context stays exactly as large as it was. Confirmed on a live
+     * thread — input tokens went from 573,988 to 575,019 across the "compaction"
+     * and kept climbing.
+     *
+     * The server answers as soon as it accepts the request, and reports
+     * completion out-of-band as an `item/completed` carrying a
+     * `contextCompaction` item. So a resolved promise means "started", not
+     * "finished" — the caller must not tell the user it is done on that basis.
+     *
+     * The generous timeout is deliberate. The summarisation model has to read
+     * the entire context, and the threads that most need compacting are the
+     * ones where that takes minutes; the default 30s would abandon the request
+     * while the server was still working on it.
+     */
+    async compactThread(opts?: { timeoutMs?: number }): Promise<void> {
+        const threadId = this._threadId;
+        if (!threadId) {
+            throw new Error('Cannot compact: no active thread');
+        }
+        logger.debug(`[CodexAppServer] Requesting context compaction for thread ${threadId}`);
+        await this.request('thread/compact/start', { threadId }, opts?.timeoutMs ?? COMPACT_TIMEOUT_MS);
     }
 
     // ─── State queries ──────────────────────────────────────────

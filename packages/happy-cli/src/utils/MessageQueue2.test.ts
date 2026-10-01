@@ -415,6 +415,39 @@ describe('MessageQueue2', () => {
         });
     });
 
+    /**
+     * Compaction is requested as its own queue action. It has to be isolated so
+     * it is never batched into a model prompt — that was the bug — but it must
+     * not discard pending prompts the way `/clear` does, because compaction
+     * keeps the conversation in summarised form and anything queued is still
+     * meaningful afterwards.
+     */
+    it('pushCompact isolates the request without discarding queued prompts', async () => {
+        const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
+
+        queue.push('first prompt', { type: 'A' });
+        queue.pushCompact({ type: 'A' });
+        queue.push('next prompt', { type: 'A' });
+
+        expect(await queue.waitForMessagesAndGetAsString()).toMatchObject({
+            message: 'first prompt',
+            isolate: false,
+        });
+
+        // Isolated, and recognisable to the consumer as the compact action.
+        expect(await queue.waitForMessagesAndGetAsString()).toMatchObject({
+            message: '/compact',
+            isolate: true,
+        });
+
+        // The prompt queued behind it survived, which is the difference from
+        // `/clear`.
+        expect(await queue.waitForMessagesAndGetAsString()).toMatchObject({
+            message: 'next prompt',
+            isolate: false,
+        });
+    });
+
     it('pushIsolated notifies waiters', async () => {
         const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
         const pending = queue.waitForMessagesAndGetAsString();

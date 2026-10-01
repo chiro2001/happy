@@ -186,6 +186,22 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Push a context-compaction request.
+     *
+     * Isolated, so it is never batched with a real instruction, but it does not
+     * discard pending prompts the way `/clear` does: compaction keeps the
+     * conversation in summarised form, so anything the user queued is still
+     * meaningful afterwards.
+     *
+     * Carries the literal `/compact` as its text because that is what the
+     * consumer recognises, the same way it recognises `/clear` — the queue
+     * itself stays generic and knows nothing about special commands.
+     */
+    pushCompact(mode: T): void {
+        this.pushIsolated('/compact', mode);
+    }
+
+    /**
      * Push a message to the beginning of the queue with a mode.
      */
     unshift(message: string, mode: T): void {
