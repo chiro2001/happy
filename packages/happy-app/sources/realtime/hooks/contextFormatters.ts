@@ -1,5 +1,5 @@
 import { Session } from "@/sync/storageTypes";
-import { Message } from "@/sync/typesMessage";
+import { Message, messageSortKey } from "@/sync/typesMessage";
 import { trimIdent } from "@/utils/trimIdent";
 import { getHarnessName } from "@/utils/harnessCatalog";
 import { VOICE_CONFIG, type VoiceConfig } from "../voiceConfig";
@@ -130,7 +130,10 @@ export function formatNewMessages(
     // is "what is this session doing". The end of the burst says that; the
     // beginning of it is already described by the end. Spending the budget
     // from the front would keep the least useful part of every burst.
-    const ordered = [...messages].sort((a, b) => a.createdAt - b.createdAt);
+    // `messageSortKey`, not `createdAt`: a message the user just sent sits at
+    // its place in the run order rather than at the moment it was typed, and
+    // the two disagree for exactly the messages that are most interesting here.
+    const ordered = [...messages].sort((a, b) => messageSortKey(a) - messageSortKey(b));
     const budget = config.MAX_INJECTION_CHARS;
     const kept: string[] = [];
     let used = 0;
@@ -162,15 +165,32 @@ export function formatHistory(
     config: VoiceConfig = VOICE_CONFIG,
     agentName: string = getHarnessName('claude'),
 ): string | null {
+    // Sorted here rather than trusting the caller, because the two mistakes
+    // this function can make are both silent and both expensive.
+    //
+    // The store hands messages over newest-first — that is the order the chat
+    // list renders, inverted — so emitting them as given writes the transcript
+    // backwards, and the last thing the model reads is the OLDEST message. A
+    // model takes the end of a transcript as the most recent news: switching to
+    // a session produced a summary of its stale end, which is what this orders
+    // away from.
+    //
+    // And the cap has to keep the newest, not the first N of whatever order it
+    // was handed. `slice(-limit)` on a chronological list is the recent end of
+    // the conversation, which is the part worth carrying.
+    //
     // 0 means "no history at all" (the minimal tier); negative means "all of
     // it" (the pre-tier behaviour); positive is a cap.
     const limit = config.MAX_HISTORY_MESSAGES;
-    let messagesToFormat = limit === 0
+    const ordered = [...messages].sort((a, b) => messageSortKey(a) - messageSortKey(b));
+    const messagesToFormat = limit === 0
         ? []
         : limit > 0
-            ? messages.slice(0, limit)
-            : messages;
-    let formatted = messagesToFormat.map((m) => formatMessage(m, config, agentName)).filter(Boolean);
+            ? ordered.slice(-limit)
+            : ordered;
+    const formatted = messagesToFormat
+        .map((m) => formatMessage(m, config, agentName))
+        .filter(Boolean);
     if (formatted.length === 0) {
         return null;
     }

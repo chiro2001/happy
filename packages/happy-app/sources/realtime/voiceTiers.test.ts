@@ -145,15 +145,33 @@ describe('voice context tiers', () => {
         const messages = Array.from({ length: 80 }, (_, i) =>
             message(`m${i}`, 'agent-text', `step ${i}`));
 
-        it('caps at the tier limit', () => {
-            const full = formatSessionFull(session(SESSION_ID, 'Work'), messages, VOICE_CONFIGS.full)!;
-            const lite = formatSessionFull(session(SESSION_ID, 'Work'), messages, VOICE_CONFIGS.lite)!;
-            expect(full).toContain('<text>step 0</text>');
-            expect(full).toContain('<text>step 49</text>');
-            expect(full).not.toContain('<text>step 50</text>');
-            expect(lite).toContain('<text>step 0</text>');
-            expect(lite).toContain('<text>step 9</text>');
-            expect(lite).not.toContain('<text>step 10</text>');
+        it('caps at the tier limit, keeping the newest', () => {
+            // Two things this has to get right, and an earlier version of this
+            // test asserted the wrong one for both.
+            //
+            // The store hands messages over newest-first (the chat list renders
+            // them inverted), so the cap has to keep the *recent* end: the
+            // reason to carry history at all is to know what just happened.
+            // And the transcript has to be written in the order it happened,
+            // because a model reads the end of a transcript as the latest news
+            // — handed a backwards one, it summarised the stale end of the
+            // session, which is the bug this caught live.
+            const newestFirst = [...messages].reverse();
+
+            const full = formatSessionFull(session(SESSION_ID, 'Work'), newestFirst, VOICE_CONFIGS.full)!;
+            const lite = formatSessionFull(session(SESSION_ID, 'Work'), newestFirst, VOICE_CONFIGS.lite)!;
+
+            // full keeps the newest 50: steps 30..79.
+            expect(full).toContain('<text>step 79</text>');
+            expect(full).toContain('<text>step 30</text>');
+            expect(full).not.toContain('<text>step 29</text>');
+            expect(full.indexOf('<text>step 30</text>')).toBeLessThan(full.indexOf('<text>step 79</text>'));
+
+            // lite keeps the newest 10: steps 70..79.
+            expect(lite).toContain('<text>step 79</text>');
+            expect(lite).toContain('<text>step 70</text>');
+            expect(lite).not.toContain('<text>step 69</text>');
+            expect(lite.indexOf('<text>step 70</text>')).toBeLessThan(lite.indexOf('<text>step 79</text>'));
         });
 
         it('omits the history section entirely in the minimal tier', () => {

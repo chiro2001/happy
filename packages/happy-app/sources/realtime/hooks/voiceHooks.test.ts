@@ -372,6 +372,49 @@ describe('voiceHooks context tiers', () => {
         });
     });
 
+    describe('the shape of the injected history', () => {
+        // The store hands messages over newest-first — that is the order the
+        // chat list renders inverted — so the transcript has to be turned back
+        // around on the way into the context. Getting this wrong is quiet and
+        // expensive: a model treats the end of a transcript as the most recent
+        // news, so a backwards history is summarised from its stale end.
+        beforeEach(() => {
+            mocks.focusedSessionId = A;
+        });
+
+        it('injects history in the order it happened, newest last', () => {
+            setTier('full');
+            const newest = message('9', 'what just happened');
+            const middle = message('5', 'something in between');
+            const oldest = message('1', 'the very first thing');
+            addSession(A, 'Refactor the parser', [newest, middle, oldest]);
+
+            const prompt = voiceHooks.onVoiceStarted(A);
+
+            expect(prompt.indexOf('the very first thing'))
+                .toBeLessThan(prompt.indexOf('something in between'));
+            expect(prompt.indexOf('something in between'))
+                .toBeLessThan(prompt.indexOf('what just happened'));
+        });
+
+        it('keeps the newest messages when the history is capped', () => {
+            // The other half of the same rule: which messages survive the cap.
+            // Ten is the lite limit, and the ten must be the recent ten.
+            setTier('lite');
+            const messages = Array.from({ length: 30 }, (_, i) => (
+                message(String(30 - i), `message number ${30 - i}`)
+            ));
+            addSession(A, 'Refactor the parser', messages);
+
+            const prompt = voiceHooks.onVoiceStarted(A);
+
+            expect(prompt).toContain('message number 30');
+            expect(prompt).toContain('message number 21');
+            expect(prompt).not.toContain('message number 20');
+            expect(prompt).not.toContain('message number 1');
+        });
+    });
+
     describe('the cost of one injection', () => {
         beforeEach(() => {
             setTier('lite');
