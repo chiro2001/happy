@@ -221,6 +221,53 @@ export class QwenRealtimeClient {
         this.pendingToolCalls = [];
     }
 
+    /**
+     * Report what the opening `session.update` actually contains.
+     *
+     * The first turn's `usage.input_tokens` has never matched the parts we can
+     * name — 8,731 measured against a system prompt of ~1,002 and tool
+     * definitions of ~226 — leaving a gap of ~6,700 tokens per turn that
+     * nothing accounted for. That gap is now the largest single cost in a voice
+     * session, so it is worth measuring rather than guessing at.
+     *
+     * Two things could produce it and this line tells them apart: our own
+     * estimate being wrong (the `cjk/1.5 + ascii/4` rule is calibrated against
+     * English prose, and an English-heavy system prompt may tokenise far
+     * differently), or the request carrying more than we think.
+     *
+     * Logged as byte counts per component, not as a rendered prompt: the same
+     * numbers can be compared against the server's `usage` line, and a full
+     * prompt belongs in a debugger, not in every user's log file.
+     */
+    private logSessionUpdate(options: QwenSessionOptions): void {
+        const session = this.buildSession(options);
+        const bytes = (value: unknown) => {
+            try {
+                return JSON.stringify(value)?.length ?? 0;
+            } catch {
+                return -1;
+            }
+        };
+        const tools = session.tools as unknown[] | undefined;
+        const parts = [
+            `envelope=${bytes({ type: 'session.update', session })}`,
+            `instructions=${bytes(session.instructions)}`,
+            `tools=${bytes(tools)}`,
+            ...(tools?.length ? [`toolCount=${tools.length}`] : []),
+            `turn_detection=${bytes(session.turn_detection)}`,
+        ];
+        console.log(
+            '[Qwen voice] session.update ·',
+            parts.join(' '),
+            // One line per tool, so a bloated description can be found without
+            // dumping the whole array.
+            ...(tools ?? []).map((tool) => {
+                const fn = (tool as { function?: { name?: string; description?: string; parameters?: unknown } }).function;
+                return `\n    tool ${fn?.name ?? '?'} desc=${bytes(fn?.description)} params=${bytes(fn?.parameters)}`;
+            }),
+        );
+    }
+
     private buildSession(options: QwenSessionOptions): Record<string, unknown> {
         const session: Record<string, unknown> = {
             modalities: ['text', 'audio'],
@@ -255,6 +302,7 @@ export class QwenRealtimeClient {
 
         switch (type) {
             case 'session.created':
+                this.logSessionUpdate(options);
                 this.send({ type: 'session.update', session: this.buildSession(options) });
                 return;
 

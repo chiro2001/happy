@@ -16,181 +16,12 @@ import { QwenRealtimeClient } from './client';
 import { QwenAudioCapture, QwenAudioPlayer } from './audio';
 import { QWEN_DEFAULTS } from './types';
 import { isStopCommand } from './stopCommand';
+import { toolsForMode } from './tools';
 import type { QwenConfig, QwenUsage } from './types';
 import type { VoiceSession, VoiceSessionConfig } from '../types';
 import { getVoiceConfig, type VoiceContextMode } from '../voiceConfig';
 import { voiceHooks } from '../hooks/voiceHooks';
 import { buildVoiceSystemPrompt } from '../voiceSystemPrompt';
-
-/**
- * Tools the model may call. The names must match `realtimeClientTools` keys —
- * note that Happy's own in-app documentation says `messageClaudeCode`, which is
- * wrong; the real key is `sendMessageToSession`.
- */
-const TOOL_DEFINITIONS = [
-    {
-        type: 'function',
-        function: {
-            // Kept terse on purpose: tool definitions are re-sent and re-billed
-            // on every turn, so their wording is a recurring cost, not a
-            // one-off. The two read tools below add ~110 tokens to the fixed
-            // overhead and exist to make the pushed transcript optional.
-            name: 'getSessionHistory',
-            description:
-                '读取某个会话最近的对话内容。当你需要知道代理实际做了什么、' +
-                '或用户之前说过什么时调用；上下文里没给的部分用它取。' +
-                '省略 sessionId 表示当前会话。',
-            parameters: {
-                type: 'object',
-                properties: {
-                    sessionId: { type: 'string', description: '会话 id；默认当前会话' },
-                    count: { type: 'number', description: '读取条数，默认 10，最多 50' },
-                    agentOnly: { type: 'boolean', description: '只读代理的输出，跳过用户消息' },
-                    before: { type: 'number', description: '读更早的：填上次结果里的 before 值' },
-                },
-            },
-        },
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'listSessions',
-            description: '列出当前正在运行的会话。用户提到别的会话而你不知道 id 时调用。',
-            parameters: { type: 'object', properties: {} },
-        },
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'sendMessageToSession',
-            description:
-                '把用户的指令发送给正在运行的编码代理。' +
-                '当用户要求转达、询问或指示代理做事时调用。' +
-                '除非用户明确点名了别的会话，否则不要填 sessionId —— ' +
-                '省略表示发到当前会话，比凭记忆填 id 可靠。',
-            parameters: {
-                type: 'object',
-                properties: {
-                    sessionId: {
-                        type: 'string',
-                        description: '目标会话 id。用户明确点名其他会话时才填；默认省略。',
-                    },
-                    message: { type: 'string', description: '要发送的文本' },
-                },
-                // sessionId is deliberately not required: see the description.
-                required: ['message'],
-            },
-        },
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'processPermissionRequest',
-            description: '批准或拒绝编码代理发出的工具使用授权请求。',
-            parameters: {
-                type: 'object',
-                properties: {
-                    requestId: { type: 'string', description: '授权请求 id' },
-                    decision: {
-                        type: 'string',
-                        enum: ['allow', 'deny'],
-                        description: '允许或拒绝',
-                    },
-                },
-                required: ['requestId', 'decision'],
-            },
-        },
-    },
-];
-
-/**
- * The same two tools, described in as few tokens as the model still
- * understands — for the minimal tier, where the tool block is a large share of
- * a deliberately small budget. Names and parameter shapes must stay identical:
- * they are dispatched by name in `onToolCall`.
- */
-const TOOL_DEFINITIONS_MINIMAL = [
-    {
-        type: 'function',
-        function: {
-            // The minimal tier carries no transcript at all, so this is not a
-            // convenience there — it is the only way to learn what an agent
-            // produced. Described in as few words as the model still acts on.
-            name: 'getSessionHistory',
-            description: '读取会话最近的对话内容；上下文里没有的细节用它取。省略 sessionId 表示当前会话。',
-            parameters: {
-                type: 'object',
-                properties: {
-                    sessionId: { type: 'string' },
-                    count: { type: 'number' },
-                    agentOnly: { type: 'boolean' },
-                    before: { type: 'number' },
-                },
-            },
-        },
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'listSessions',
-            description: '列出正在运行的会话。',
-            parameters: { type: 'object', properties: {} },
-        },
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'sendMessageToSession',
-            description: '把用户指令发给编码代理；省略 sessionId 表示当前会话',
-            parameters: {
-                type: 'object',
-                properties: {
-                    sessionId: { type: 'string' },
-                    message: { type: 'string' },
-                },
-                required: ['message'],
-            },
-        },
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'processPermissionRequest',
-            description: '批准或拒绝授权请求',
-            parameters: {
-                type: 'object',
-                properties: {
-                    requestId: { type: 'string' },
-                    decision: { type: 'string', enum: ['allow', 'deny'] },
-                },
-                required: ['requestId', 'decision'],
-            },
-        },
-    },
-];
-
-/**
- * Rough token weight of a string, matching the estimator in
- * tools/qwen-realtime-test/measure_context.py: ~4 chars per token for ASCII and
- * ~1.5 for CJK. Good to about ±10%, which is enough to tell which component is
- * paying for a surprise.
- */
-function estimateTokens(text: string): number {
-    let cjk = 0;
-    let ascii = 0;
-    let other = 0;
-    for (const char of text) {
-        const code = char.codePointAt(0)!;
-        if (code >= 0x4e00 && code <= 0x9fff) cjk += 1;
-        else if (code < 128) ascii += 1;
-        else other += 1;
-    }
-    return Math.round(cjk / 1.5 + ascii / 4 + other / 3);
-}
-
-function toolsForMode(mode: VoiceContextMode | undefined) {
-    return mode === 'minimal' ? TOOL_DEFINITIONS_MINIMAL : TOOL_DEFINITIONS;
-}
 
 /** Turn the shared session config into provider-specific options. */
 function toSessionOptions(config: VoiceSessionConfig, tools: unknown[]) {
@@ -232,6 +63,25 @@ function toSessionOptions(config: VoiceSessionConfig, tools: unknown[]) {
         vadType: 'server_vad' as const,
     };
 }
+/**
+ * Rough token weight of a string, matching the estimator in
+ * tools/qwen-realtime-test/measure_context.py: ~4 chars per token for ASCII and
+ * ~1.5 for CJK. Good to about ±10%, which is enough to tell which component is
+ * paying for a surprise.
+ */
+function estimateTokens(text: string): number {
+    let cjk = 0;
+    let ascii = 0;
+    let other = 0;
+    for (const char of text) {
+        const code = char.codePointAt(0)!;
+        if (code >= 0x4e00 && code <= 0x9fff) cjk += 1;
+        else if (code < 128) ascii += 1;
+        else other += 1;
+    }
+    return Math.round(cjk / 1.5 + ascii / 4 + other / 3);
+}
+
 class QwenVoiceSessionImpl implements VoiceSession {
     private client: QwenRealtimeClient | null = null;
     private capture = new QwenAudioCapture();
@@ -304,7 +154,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
     /** The config we were started with; the basis for a fresh brief later. */
     private lastConfig: VoiceSessionConfig | null = null;
     /** Tool block for the current tier, chosen in `startSession`. */
-    private tools: unknown[] = TOOL_DEFINITIONS;
+    private tools: unknown[] = toolsForMode(storage.getState().settings.voiceContextMode);
     /** Assistant turns completed in the current connection. */
     private turnCount = 0;
     /**
