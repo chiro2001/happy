@@ -330,7 +330,7 @@ interface StorageState {
     deleteMachine: (machineId: string) => void;
     applyLoaded: () => void;
     applyReady: () => void;
-    applyMessages: (sessionId: string, messages: NormalizedMessage[], source?: 'sync' | 'preload') => { changed: string[], settledMessageIds: string[], readyTurns: ReadyTurn[], enteredPlanMode: boolean };
+    applyMessages: (sessionId: string, messages: NormalizedMessage[], source?: 'sync' | 'history' | 'preload') => { changed: string[], settledMessageIds: string[], readyTurns: ReadyTurn[], enteredPlanMode: boolean };
     applyUserMessageServerIds: (sessionId: string, pairs: readonly { serverId: string; localId: string }[]) => void;
     applyMessagesLoaded: (sessionId: string) => void;
     applyOlderMessagesPagination: (sessionId: string, info: { hasMore: boolean }) => void;

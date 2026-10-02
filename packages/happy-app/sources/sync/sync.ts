@@ -2487,7 +2487,13 @@ class Sync {
         if (normalizedMessages.length > 0) {
             // Once the destination has focus this is an ordinary first page,
             // including voice updates if the call began before it arrived.
-            const source = preloadSignal && storage.getState().currentViewingSessionId !== sessionId ? 'preload' : 'sync';
+            // A page fetched from the server is *history*, whether or not the
+            // session is the one on screen. The distinction matters because the
+            // page can contain the ends of turns that finished before this
+            // client was even running — and a completion the user did not watch
+            // happen is not news to announce. Socket updates take the `sync`
+            // path and are the only ones that announce.
+            const source = preloadSignal && storage.getState().currentViewingSessionId !== sessionId ? 'preload' : 'history';
             this.applyMessages(sessionId, normalizedMessages, source);
         }
     }
@@ -3248,7 +3254,7 @@ class Sync {
     // Apply store
     //
 
-    private applyMessages = (sessionId: string, messages: NormalizedMessage[], source: 'sync' | 'preload' = 'sync') => {
+    private applyMessages = (sessionId: string, messages: NormalizedMessage[], source: 'sync' | 'history' | 'preload' = 'sync') => {
         const planMode = messagePlanMode(messages);
         if (planMode !== null) this.preloadedPlanModes.delete(sessionId);
         const applyStarted = Date.now();
@@ -3285,8 +3291,19 @@ class Sync {
         // Every turn that ended in this batch, in order. The voice layer
         // announces each one at most once, and stays quiet about a turn the
         // user stopped — see `voiceHooks.onReady`.
-        for (const turn of result.readyTurns) {
-            voiceHooks.onReady(sessionId, turn);
+        //
+        // History is excluded, and that is the point of separating it: a
+        // fetched page carries the turn ends of everything that happened while
+        // this client was closed, and a session opened after a long run hands
+        // over a whole page of them at once. Announcing those reads the
+        // transcript aloud — measured on the desktop app: opening a session
+        // produced seventeen "Codex done working" notices in forty-five
+        // seconds, all of them for turns that had finished before the app
+        // started.
+        if (source !== 'history') {
+            for (const turn of result.readyTurns) {
+                voiceHooks.onReady(sessionId, turn);
+            }
         }
         if (result.enteredPlanMode) {
             // The EnterPlanMode auto-switch only wrote the local mirror; push

@@ -271,6 +271,40 @@ describe('session avatar sync integration', () => {
 });
 
 describe('chat preload sync integration', () => {
+    it('does not announce completions found in fetched history', async () => {
+        // A page fetched from the server carries the turn ends of everything
+        // that happened while this client was closed. Announcing them reads the
+        // transcript aloud: a session opened on the desktop after a long run
+        // produced seventeen "done working" notices in forty-five seconds, all
+        // for turns that had finished before the app started.
+        mocks.applyMessages.mockImplementation(() => ({
+            changed: [], settledMessageIds: [], enteredPlanMode: false,
+            readyTurns: [{ turnId: 'turn-old-1', status: 'completed' }, { turnId: 'turn-old-2', status: 'completed' }],
+        }));
+        mocks.request.mockResolvedValue(response([message()]));
+
+        engine.onSessionVisible('a');
+        await engine.getMessagesSync('a').awaitQueue();
+
+        expect(mocks.applyMessages.mock.calls[0][2]).toBe('history');
+        expect(mocks.voiceReady).not.toHaveBeenCalled();
+    });
+
+    it('announces a completion that arrived while the client was live', async () => {
+        mocks.applyMessages.mockImplementation(() => ({
+            changed: [], settledMessageIds: [], enteredPlanMode: false,
+            readyTurns: [{ turnId: 'turn-live-1', status: 'completed' }],
+        }));
+        engine.onSessionVisible('a');
+        await engine.getMessagesSync('a').awaitQueue();
+        mocks.voiceReady.mockClear();
+
+        // A socket update: `handleUpdate` is what the queue feeds.
+        engine.applyMessages('a', [message()]);
+
+        expect(mocks.voiceReady).toHaveBeenCalledWith('a', { turnId: 'turn-live-1', status: 'completed' });
+    });
+
     it('hydrates one latest page without read, voice, git, or history side effects', async () => {
         mocks.request.mockResolvedValue(response([message()], true));
         const older = vi.spyOn(engine, 'loadOlderMessages');
@@ -301,7 +335,10 @@ describe('chat preload sync integration', () => {
         await engine.getMessagesSync('a').awaitQueue();
         expect(mocks.request).toHaveBeenCalledOnce();
         expect(encryption.decryptMessages).toHaveBeenCalledOnce();
-        expect(mocks.applyMessages.mock.calls[0][2]).toBe('sync');
+        // The page was fetched, so it is history: it still hydrates the chat
+        // and still tells voice what the session contains, but it does not
+        // announce completions for turns that ended before this client ran.
+        expect(mocks.applyMessages.mock.calls[0][2]).toBe('history');
         expect(mocks.voiceMessages).toHaveBeenCalledOnce();
         expect(mocks.voiceFocus).toHaveBeenCalledWith('a', {});
     });
