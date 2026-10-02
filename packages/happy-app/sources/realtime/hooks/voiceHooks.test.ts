@@ -158,7 +158,12 @@ describe('voiceHooks context tiers', () => {
             expect(mocks.context.filter((c) => c.includes('session-a'))).toHaveLength(1);
         });
 
-        it('clips a long tool description to the tier budget', () => {
+        it('drops a huge tool description entirely rather than clipping it', () => {
+            // For a Codex session the description is the shell command, and it
+            // is the single largest thing the assistant is sent: 47% of
+            // everything injected over a measured half-hour window, against 1%
+            // for the agent's own words. lite sends the tool's *name* — enough
+            // to say what a session is doing — and none of the command.
             voiceHooks.onVoiceStarted(A);
             mocks.context.length = 0;
             const huge = 'x'.repeat(50_000);
@@ -166,14 +171,18 @@ describe('voiceHooks context tiers', () => {
             voiceHooks.onMessages(A, [{
                 id: '45',
                 kind: 'tool-call',
+                localId: null,
                 createdAt: 45,
                 tool: { name: 'CodexBash', description: huge, input: {} },
             } as unknown as Message]);
 
             const sent = mocks.context.join('\n');
-            expect(sent).toContain('truncated');
-            // lite's cap is 700; allow for the surrounding framing.
-            expect(sent.length).toBeLessThan(2000);
+            // The name survives, so the assistant can still describe progress.
+            expect(sent).toContain('CodexBash');
+            // The command does not, so the budget is untouched by its size.
+            expect(sent).not.toContain('xxxx');
+            expect(sent).not.toContain('truncated');
+            expect(sent.length).toBeLessThan(400);
         });
 
         it('upgrades a previously background session once the user moves to it', () => {

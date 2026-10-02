@@ -185,6 +185,88 @@ describe('voice context tiers', () => {
         });
     });
 
+    describe('what a tool call costs', () => {
+        // For a Codex session the tool's description is the shell command, so
+        // including it costs the tier's whole per-message budget per call, and
+        // a session running commands produces one every few seconds. Measured
+        // over a half-hour live window: tool calls were 47% of everything
+        // injected, and the agent's own words were 1%.
+        const bashCall = (id: string, command: string): Message => ({
+            id,
+            kind: 'tool-call',
+            localId: null,
+            createdAt: Number(id.replace(/\D/g, '')) || 0,
+            tool: {
+                name: 'CodexBash',
+                description: command,
+                input: { cmd: command },
+                state: 'completed',
+                createdAt: 0,
+                startedAt: 0,
+                completedAt: 0,
+            },
+            children: [],
+        } satisfies Message);
+
+        const command = '/usr/bin/zsh -lc "timeout 900 ssh a3-21 \'python3 ~/tmp/n16.py 19210 1,8,16 240\' 2>&1 | tail -60"';
+
+        it('sends only the name in the lite tier', () => {
+            const out = formatNewMessages(SESSION_ID, [bashCall('m1', command)], VOICE_CONFIGS.lite)!;
+
+            expect(out).toContain('CodexBash');
+            expect(out).not.toContain('timeout 900');
+            expect(out).not.toContain('a3-21');
+        });
+
+        it('still sends the command in the full tier', () => {
+            const out = formatNewMessages(SESSION_ID, [bashCall('m1', command)], VOICE_CONFIGS.full)!;
+
+            expect(out).toContain('CodexBash');
+            expect(out).toContain('a3-21');
+        });
+
+        it('sends nothing in the minimal tier', () => {
+            const out = formatNewMessages(SESSION_ID, [bashCall('m1', command)], VOICE_CONFIGS.minimal);
+            expect(out).toBeNull();
+        });
+
+        it('keeps a tool call that has no description', () => {
+            // The earlier version nested the whole branch under "if there is a
+            // description", which silently dropped every such call — so a tier
+            // set to name-only would have reported nothing at all for the tools
+            // that carry no description.
+            const bare = {
+                id: 'm2',
+                kind: 'tool-call',
+                localId: null,
+                createdAt: 2,
+                tool: {
+                    name: 'CodexSubagent',
+                    description: null,
+                    input: {},
+                    state: 'completed',
+                    createdAt: 0,
+                    startedAt: 0,
+                    completedAt: 0,
+                },
+                children: [],
+            } satisfies Message;
+
+            const out = formatNewMessages(SESSION_ID, [bare], VOICE_CONFIGS.lite)!;
+            expect(out).toContain('CodexSubagent');
+        });
+
+        it('cuts the injected size by roughly the length of the command', () => {
+            const batch = Array.from({ length: 5 }, (_, i) => bashCall(`m${i}`, command));
+            const full = formatNewMessages(SESSION_ID, batch, VOICE_CONFIGS.full)!.length;
+            const lite = formatNewMessages(SESSION_ID, batch, VOICE_CONFIGS.lite)!.length;
+
+            // The command is ~120 characters here; with a realistic one it is
+            // the entire per-message budget.
+            expect(lite).toBeLessThan(full / 3);
+        });
+    });
+
     describe('fixed per-turn cost', () => {
         it('shrinks the system prompt with the tier', () => {
             const minimal = estimateTokens(getVoiceSystemPromptBase('minimal'));

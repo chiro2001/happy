@@ -83,20 +83,22 @@ export function formatMessage(
         lines.push(`${agentName}: \n<text>${clip(message.text, config)}</text>`);
     } else if (message.kind === 'user-text') {
         lines.push(`User sent message: \n<text>${clip(message.text, config)}</text>`);
-    } else if (message.kind === 'tool-call' && !config.DISABLE_TOOL_CALLS) {
-        // Codex puts the whole shell command here, so this is usually the
-        // largest thing in the transcript.
-        const description = message.tool.description
+    } else if (message.kind === 'tool-call' && config.TOOL_CALL_DETAIL !== 'off') {
+        // The name is always worth its few tokens: it is the only thing in a
+        // tool call that survives being spoken, and it is what the assistant
+        // needs to describe progress. For a Codex session the description *is*
+        // the shell command, so including it costs the tier's whole
+        // per-message budget per call — see `TOOL_CALL_DETAIL`.
+        //
+        // Note this emits the name even when there is no description. The
+        // earlier version nested the whole branch under "if there is a
+        // description", which silently dropped every tool call that had none.
+        const withDetail = config.TOOL_CALL_DETAIL === 'full';
+        const description = withDetail && message.tool.description
             ? clip(message.tool.description, config)
             : '';
         const toolDescription = description ? ` - ${description}` : '';
-        if (config.LIMITED_TOOL_CALLS) {
-            if (message.tool.description) {
-                lines.push(`${agentName} is using ${message.tool.name}${toolDescription}`);
-            }
-        } else {
-            lines.push(`${agentName} is using ${message.tool.name}${toolDescription} (tool_use_id: ${message.id}) with arguments: <arguments>${clip(JSON.stringify(message.tool.input), config)}</arguments>`);
-        }
+        lines.push(`${agentName} is using ${message.tool.name}${toolDescription}`);
     }
     if (lines.length === 0) {
         return null;

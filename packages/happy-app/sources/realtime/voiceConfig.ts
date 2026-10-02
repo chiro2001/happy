@@ -14,10 +14,29 @@
 export type VoiceContextMode = 'minimal' | 'lite' | 'full';
 
 export interface VoiceConfig {
-    /** Drop tool-call information entirely. */
-    DISABLE_TOOL_CALLS: boolean;
-    /** Send tool names and descriptions but not their arguments. */
-    LIMITED_TOOL_CALLS: boolean;
+    /**
+     * How much of a tool call reaches the context.
+     *
+     * - `full`   name, clipped description, and for the verbose tiers the
+     *            arguments too
+     * - `name`   just the tool's name — "Codex is using CodexBash"
+     * - `off`    nothing at all
+     *
+     * This is the single biggest lever left, and the measurement is not close.
+     * For a Codex session the tool's description *is* the shell command, so a
+     * `full` tool call costs the tier's whole per-message budget — 700
+     * characters in lite — and a session running commands produces one every
+     * few seconds. Of everything injected into a live desktop session over a
+     * half-hour window, tool calls were 47% and the agent's own words were 1%.
+     *
+     * The split does not match what a voice assistant needs. Its job is to say
+     * what a session is doing, and the tool's *name* answers that: running a
+     * command, editing files, waiting on a subagent. The command text itself is
+     * never read aloud, and when the user does want detail the agent's own
+     * summary — or `getSessionHistory` — is a better source than a spliced
+     * shell line.
+     */
+    TOOL_CALL_DETAIL: 'full' | 'name' | 'off';
     /** Never forward permission requests — the assistant loses approval ability. */
     DISABLE_PERMISSION_REQUESTS: boolean;
     /** Skip session online/offline notices. */
@@ -114,8 +133,7 @@ export interface VoiceConfig {
  * over 50 turns.
  */
 const FULL: VoiceConfig = {
-    DISABLE_TOOL_CALLS: false,
-    LIMITED_TOOL_CALLS: true,
+    TOOL_CALL_DETAIL: 'full',
     DISABLE_PERMISSION_REQUESTS: false,
     DISABLE_SESSION_STATUS: true,
     DISABLE_MESSAGES: false,
@@ -140,6 +158,12 @@ const FULL: VoiceConfig = {
  */
 const LITE: VoiceConfig = {
     ...FULL,
+    // Name only. The description is the shell command, and a command is the one
+    // part of a tool call that never belongs in a spoken summary; the name is
+    // what tells the assistant whether the session is running something,
+    // editing something, or waiting on a subagent. Measured on a live desktop
+    // session, this is most of what the tier was spending.
+    TOOL_CALL_DETAIL: 'name',
     MAX_HISTORY_MESSAGES: 10,
     REPORT_ONLY_BACKGROUND: true,
     INCLUDE_SESSION_DIRECTORY: true,
@@ -158,7 +182,9 @@ const LITE: VoiceConfig = {
  */
 const MINIMAL: VoiceConfig = {
     ...LITE,
-    DISABLE_TOOL_CALLS: true,
+    // Nothing reaches this tier, so names would be its only claim about what an
+    // agent produced — and a name without a result is not worth the rent.
+    TOOL_CALL_DETAIL: 'off',
     MAX_HISTORY_MESSAGES: 0,
     INCLUDE_SESSION_DIRECTORY: false,
     ENABLE_DEBUG_LOGGING: false,
