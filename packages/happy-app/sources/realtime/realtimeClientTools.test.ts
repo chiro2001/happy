@@ -14,6 +14,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = {
     state: {
         sessions: {} as Record<string, any>,
+        sessionMessages: {} as Record<string, any>,
+        settings: { voiceContextMode: 'full' as 'minimal' | 'lite' | 'full' },
     },
     focused: null as string | null,
     sent: [] as Array<{ sessionId: string; message: string }>,
@@ -57,6 +59,8 @@ function addSession(id: string, summary: string) {
 
 beforeEach(() => {
     mocks.state.sessions = {};
+    mocks.state.sessionMessages = {};
+    mocks.state.settings = { voiceContextMode: 'full' };
     mocks.focused = CURRENT;
     mocks.sent.length = 0;
     mocks.contexts.length = 0;
@@ -146,5 +150,111 @@ describe('sendMessageToSession', () => {
 
         expect(mocks.sent).toHaveLength(0);
         expect(result).toContain('error');
+    });
+});
+
+/**
+ * The read tools exist so the pushed transcript can be optional: everything
+ * pushed into a realtime session stays there and is re-billed on every later
+ * turn, while something read on request is paid once. These hold the two
+ * properties that make that trade safe — the assistant gets the newest
+ * material, and it is told when there is more.
+ */
+describe('getSessionHistory', () => {
+    function agentText(id: string, at: number, text: string) {
+        return { kind: 'agent-text', id, localId: null, createdAt: at, text };
+    }
+    function userText(id: string, at: number, text: string) {
+        return { kind: 'user-text', id, localId: null, createdAt: at, text };
+    }
+
+    function load(messages: any[], hasMoreOlder = false) {
+        mocks.state.sessionMessages[CURRENT] = { messages, hasMoreOlder };
+    }
+
+    beforeEach(() => {
+        addSession(CURRENT, 'Refactor the parser');
+        load([
+            agentText('m1', 1, 'first step'),
+            userText('m2', 2, 'carry on'),
+            agentText('m3', 3, 'second step'),
+        ]);
+    });
+
+    it('reads the newest messages by default', async () => {
+        const result = await realtimeClientTools.getSessionHistory({ count: 1 });
+
+        expect(result).toContain('second step');
+        expect(result).not.toContain('first step');
+    });
+
+    it('says how much older history is left, and how to reach it', async () => {
+        // The assistant cannot ask for what it does not know exists.
+        const result = await realtimeClientTools.getSessionHistory({ count: 1 });
+
+        expect(result).toContain('2 older available');
+        expect(result).toContain('before=3');
+    });
+
+    it('pages backwards through the window', async () => {
+        const result = await realtimeClientTools.getSessionHistory({ count: 2, before: 3 });
+
+        expect(result).toContain('first step');
+        expect(result).toContain('carry on');
+        expect(result).not.toContain('second step');
+    });
+
+    it('can skip the user\u2019s own messages', async () => {
+        const result = await realtimeClientTools.getSessionHistory({ agentOnly: true });
+
+        expect(result).toContain('first step');
+        expect(result).not.toContain('carry on');
+    });
+
+    it('falls back to the current session when none is named', async () => {
+        const result = await realtimeClientTools.getSessionHistory({});
+
+        expect(result).toContain(CURRENT);
+    });
+
+    it('says so when the session has produced nothing yet', async () => {
+        load([]);
+        const result = await realtimeClientTools.getSessionHistory({});
+
+        expect(result).toContain('no messages match');
+    });
+
+    it('admits that older history exists on the machine but is not loaded', async () => {
+        // A client keeps a window, not the whole conversation. Without this the
+        // assistant concludes the session began where the window does.
+        load([agentText('m1', 1, 'only what is loaded')], true);
+        const result = await realtimeClientTools.getSessionHistory({});
+
+        expect(result).toContain('Older history exists');
+    });
+
+    it('rejects nonsense parameters instead of guessing', async () => {
+        const result = await realtimeClientTools.getSessionHistory({ count: -5 });
+        expect(result).toContain('error');
+    });
+});
+
+describe('listSessions', () => {
+    it('lists every running session and marks the current one', async () => {
+        addSession(CURRENT, 'the one on screen');
+        addSession(OTHER, 'the other one');
+
+        const result = await realtimeClientTools.listSessions();
+
+        expect(result).toContain('the one on screen');
+        expect(result).toContain('the other one');
+        expect(result).toContain(CURRENT);
+        expect(result).toContain('(current)');
+    });
+
+    it('handles having no sessions at all', async () => {
+        mocks.state.sessions = {};
+        const result = await realtimeClientTools.listSessions();
+        expect(result).toContain('No sessions');
     });
 });

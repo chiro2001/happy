@@ -88,6 +88,22 @@ export interface VoiceConfig {
      * everything and can ask the agent for detail.
      */
     MAX_INJECTION_CHARS: number;
+    /**
+     * Whether an agent's own output is pushed into the context as it happens.
+     *
+     * The single most expensive thing we can do, because everything pushed
+     * stays: the realtime API has no cache and no way to delete an item, so a
+     * pushed message body is re-billed on every later turn of the call. A body
+     * the assistant fetches through `getSessionHistory` instead is paid once,
+     * by a question that actually needed it.
+     *
+     * Turning this off does not remove the assistant's ability to answer
+     * questions about a session — it changes when the reading happens, from
+     * "always, in advance" to "when asked". What it does give up is
+     * unprompted commentary: an assistant that has not read the output cannot
+     * volunteer what it says.
+     */
+    PUSH_AGENT_OUTPUT: boolean;
 }
 
 /**
@@ -112,6 +128,7 @@ const FULL: VoiceConfig = {
     RESET_AFTER_TURNS: null,
     MAX_MESSAGE_CHARS: 4000,
     MAX_INJECTION_CHARS: 8000,
+    PUSH_AGENT_OUTPUT: true,
 };
 
 /**
@@ -129,6 +146,7 @@ const LITE: VoiceConfig = {
     RESET_AFTER_TURNS: 20,
     MAX_MESSAGE_CHARS: 700,
     MAX_INJECTION_CHARS: 2000,
+    PUSH_AGENT_OUTPUT: true,
 };
 
 /**
@@ -147,6 +165,9 @@ const MINIMAL: VoiceConfig = {
     RESET_AFTER_TURNS: 10,
     MAX_MESSAGE_CHARS: 300,
     MAX_INJECTION_CHARS: 900,
+    // Minimal reads on demand and pushes nothing. Its whole premise is that a
+    // transcript the user has not asked to hear is not worth its rent.
+    PUSH_AGENT_OUTPUT: false,
 };
 
 export const VOICE_CONFIGS: Record<VoiceContextMode, VoiceConfig> = {

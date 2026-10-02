@@ -229,8 +229,24 @@ export function formatCompletionNotice(
     sessionId: string,
     summary?: string | null,
     agentName: string = getHarnessName('claude'),
+    /**
+     * Whether the assistant already has the session's output in context.
+     *
+     * A tier that reads on demand pushes none of it, and a notice promising
+     * "the previous message(s) are the summary of the work done" would then be
+     * describing something the assistant cannot see — the one case where it is
+     * guaranteed to invent an answer. So the text names the tool instead.
+     */
+    hasOutputInContext: boolean = true,
 ): string {
     const label = summary?.trim() ? ` "${summary.trim()}"` : '';
+    if (!hasOutputInContext) {
+        return (
+            `${agentName} finished working in background session: ${sessionId}${label}. `
+            + `You have not been shown its output — call getSessionHistory if the `
+            + `user wants to know what it did. Report the completion in one short sentence.`
+        );
+    }
     return (
         `${agentName} finished working in background session: ${sessionId}${label}. `
         + `Report this to the user in one short sentence. `
@@ -301,6 +317,11 @@ export function formatSessionFocus(
 export function formatReadyEvent(
     sessionId: string,
     agentName: string = getHarnessName('claude'),
+    /** See `formatCompletionNotice`: meaningless when nothing was pushed. */
+    hasOutputInContext: boolean = true,
 ): string {
+    if (!hasOutputInContext) {
+        return `${agentName} done working in session: ${sessionId}. You have not been shown its output — call getSessionHistory to see what it did. Report this to the human immediately.`;
+    }
     return `${agentName} done working in session: ${sessionId}. The previous message(s) are the summary of the work done. Report this to the human immediately.`;
 }

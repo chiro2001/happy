@@ -31,6 +31,37 @@ const TOOL_DEFINITIONS = [
     {
         type: 'function',
         function: {
+            // Kept terse on purpose: tool definitions are re-sent and re-billed
+            // on every turn, so their wording is a recurring cost, not a
+            // one-off. The two read tools below add ~110 tokens to the fixed
+            // overhead and exist to make the pushed transcript optional.
+            name: 'getSessionHistory',
+            description:
+                '读取某个会话最近的对话内容。当你需要知道代理实际做了什么、' +
+                '或用户之前说过什么时调用；上下文里没给的部分用它取。' +
+                '省略 sessionId 表示当前会话。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    sessionId: { type: 'string', description: '会话 id；默认当前会话' },
+                    count: { type: 'number', description: '读取条数，默认 10，最多 50' },
+                    agentOnly: { type: 'boolean', description: '只读代理的输出，跳过用户消息' },
+                    before: { type: 'number', description: '读更早的：填上次结果里的 before 值' },
+                },
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'listSessions',
+            description: '列出当前正在运行的会话。用户提到别的会话而你不知道 id 时调用。',
+            parameters: { type: 'object', properties: {} },
+        },
+    },
+    {
+        type: 'function',
+        function: {
             name: 'sendMessageToSession',
             description:
                 '把用户的指令发送给正在运行的编码代理。' +
@@ -79,6 +110,33 @@ const TOOL_DEFINITIONS = [
  * they are dispatched by name in `onToolCall`.
  */
 const TOOL_DEFINITIONS_MINIMAL = [
+    {
+        type: 'function',
+        function: {
+            // The minimal tier carries no transcript at all, so this is not a
+            // convenience there — it is the only way to learn what an agent
+            // produced. Described in as few words as the model still acts on.
+            name: 'getSessionHistory',
+            description: '读取会话最近的对话内容；上下文里没有的细节用它取。省略 sessionId 表示当前会话。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    sessionId: { type: 'string' },
+                    count: { type: 'number' },
+                    agentOnly: { type: 'boolean' },
+                    before: { type: 'number' },
+                },
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'listSessions',
+            description: '列出正在运行的会话。',
+            parameters: { type: 'object', properties: {} },
+        },
+    },
     {
         type: 'function',
         function: {

@@ -352,6 +352,21 @@ export const voiceHooks = {
         if (currentConfig.DISABLE_MESSAGES) return;
 
         const background = isBackgroundSession(sessionId);
+
+        // Pushing agent output is the most expensive thing this feature does,
+        // because it is never removed: the realtime API has no cache and no way
+        // to delete an item, so every pushed body is re-billed on every later
+        // turn. A tier that reads on demand instead skips this and lets the
+        // assistant call `getSessionHistory` when a question needs detail.
+        //
+        // Note what is *not* skipped: the completion notice. That is what makes
+        // the assistant speak up unprompted, and a tier that pushed nothing and
+        // announced nothing would leave the user with no signal at all that
+        // their agent finished.
+        if (!currentConfig.PUSH_AGENT_OUTPUT) {
+            return;
+        }
+
         if (!shouldInjectMessageBody(currentConfig, background)) {
             // Deliberately silent. A turn produces several messages (tool calls,
             // partial text, the final answer); announcing each one would make
@@ -505,13 +520,14 @@ export const voiceHooks = {
                 sessionId,
                 session?.metadata?.summary?.text,
                 agentNameFor(sessionId),
+                currentConfig.PUSH_AGENT_OUTPUT,
             ));
             return;
         }
 
         const ctx = injectSessionContext(sessionId, false);
         if (ctx) sendContext(ctx);
-        sendPrompt(formatReadyEvent(sessionId, agentNameFor(sessionId)));
+        sendPrompt(formatReadyEvent(sessionId, agentNameFor(sessionId), currentConfig.PUSH_AGENT_OUTPUT));
     },
 
     /**

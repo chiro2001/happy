@@ -336,6 +336,42 @@ describe('voiceHooks context tiers', () => {
         });
     });
 
+    describe('reading on demand instead of pushing', () => {
+        beforeEach(() => {
+            setTier('minimal');
+            mocks.focusedSessionId = A;
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+            mocks.prompts.length = 0;
+        });
+
+        it('pushes no agent output at all in the read-on-demand tier', () => {
+            // Everything pushed into a realtime session stays there and is
+            // re-billed on every later turn, so this tier reads instead.
+            voiceHooks.onMessages(A, [message('9', 'the agent produced this')]);
+            expect(mocks.context.join('\n')).not.toContain('the agent produced this');
+        });
+
+        it('still announces that a turn finished', () => {
+            // The one thing that must survive: without it the user gets no
+            // signal at all that their agent stopped working.
+            voiceHooks.onReady(A, { turnId: 't1', status: 'completed' });
+            expect(mocks.prompts).toHaveLength(1);
+        });
+
+        it('tells the assistant to read the output rather than implying it has it', () => {
+            // The pushed tiers end their notice with "the previous message(s)
+            // are the summary of the work done". In a tier that pushed nothing
+            // that sentence describes something the assistant cannot see, and
+            // it will invent an answer rather than admit that.
+            voiceHooks.onReady(A, { turnId: 't1', status: 'completed' });
+            const notice = mocks.prompts.join('\n');
+
+            expect(notice).toContain('getSessionHistory');
+            expect(notice).not.toContain('previous message(s) are the summary');
+        });
+    });
+
     describe('the cost of one injection', () => {
         beforeEach(() => {
             setTier('lite');
