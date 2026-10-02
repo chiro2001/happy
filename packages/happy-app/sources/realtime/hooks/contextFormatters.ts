@@ -123,14 +123,37 @@ export function formatNewMessages(
     config: VoiceConfig = VOICE_CONFIG,
     agentName: string = getHarnessName('claude'),
 ): string | null {
-    let formatted = [...messages]
-        .sort((a, b) => a.createdAt - b.createdAt)
-        .map((m) => formatMessage(m, config, agentName))
-        .filter(Boolean);
-    if (formatted.length === 0) {
+    // Newest first to spend the budget, then put back in order to read.
+    //
+    // A batch is a burst of progress — a turn's worth of tool calls and text
+    // arriving in one update — and what the assistant has to be able to answer
+    // is "what is this session doing". The end of the burst says that; the
+    // beginning of it is already described by the end. Spending the budget
+    // from the front would keep the least useful part of every burst.
+    const ordered = [...messages].sort((a, b) => a.createdAt - b.createdAt);
+    const budget = config.MAX_INJECTION_CHARS;
+    const kept: string[] = [];
+    let used = 0;
+    let dropped = 0;
+    for (let i = ordered.length - 1; i >= 0; i -= 1) {
+        const formatted = formatMessage(ordered[i], config, agentName);
+        if (!formatted) continue;
+        if (used + formatted.length > budget && kept.length > 0) {
+            dropped = i + 1;
+            break;
+        }
+        kept.push(formatted);
+        used += formatted.length;
+    }
+    if (kept.length === 0) {
         return null;
     }
-    return 'New messages in session: ' + sessionId + '\n\n' + formatted.join('\n\n');
+    kept.reverse();
+
+    const header = dropped > 0
+        ? `New messages in session: ${sessionId} (${dropped} earlier ${dropped === 1 ? 'message' : 'messages'} omitted; ask the session for detail if you need it)`
+        : `New messages in session: ${sessionId}`;
+    return header + '\n\n' + kept.join('\n\n');
 }
 
 export function formatHistory(

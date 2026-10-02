@@ -335,4 +335,66 @@ describe('voiceHooks context tiers', () => {
             expect(mocks.prompts).toHaveLength(1);
         });
     });
+
+    describe('the cost of one injection', () => {
+        beforeEach(() => {
+            setTier('lite');
+            mocks.focusedSessionId = A;
+            voiceHooks.onVoiceStarted(A);
+            mocks.context.length = 0;
+        });
+
+        it('bounds a batch however many messages arrive together', () => {
+            // The per-message cap bounds one message; the batch was the hole.
+            // A busy session delivers a dozen changed rows in one update, and
+            // a batch of them reached ~8,000 characters (~2,500 tokens) — all
+            // of which stays in the realtime context and is re-billed on every
+            // later turn. Measured: three voice turns billed 61,935 input
+            // tokens, with single injections costing 1,000–2,500 each.
+            const batch: Message[] = [];
+            for (let i = 0; i < 40; i += 1) {
+                const text = `step ${i} ` + 'x'.repeat(600);
+                batch.push({ id: `m${i}`, kind: 'agent-text', createdAt: i, text } as Message);
+            }
+
+            voiceHooks.onMessages(A, batch);
+
+            const injected = mocks.context.join('\n');
+            // The tier's budget, plus the header and the omission marker.
+            expect(injected.length).toBeLessThan(2600);
+            // What is kept is the end of the burst, where the session got to.
+            expect(injected).toContain('step 39');
+            expect(injected).not.toContain('step 0 ');
+            // And the assistant is told it is not seeing all of it, rather than
+            // being left to assume the batch was complete.
+            expect(injected).toMatch(/\d+ earlier messages? omitted/);
+        });
+
+        it('does not re-send a clipped message that merely grew', () => {
+            // Text streams in at the end, and every growth arrives as its own
+            // update. Once the version already sent was clipped, the visible
+            // part cannot change — only the count of characters not shown,
+            // which is a number in the truncation marker. Re-sending re-bills
+            // the same prefix and appends a near-copy beside it.
+            const long = 'y'.repeat(3000);
+            voiceHooks.onMessages(A, [{ id: 'm1', kind: 'agent-text', createdAt: 1, text: long } as Message]);
+            expect(mocks.context).toHaveLength(1);
+
+            mocks.context.length = 0;
+            voiceHooks.onMessages(A, [{ id: 'm1', kind: 'agent-text', createdAt: 1, text: long + 'more text' } as Message]);
+            expect(mocks.context).toEqual([]);
+        });
+
+        it('still sends a message whose visible part actually changed', () => {
+            // The suppression above must not swallow a real edit: a message
+            // that was short enough to send whole, then grew past the point of
+            // being readable, has new content the assistant has not seen.
+            voiceHooks.onMessages(A, [{ id: 'm1', kind: 'agent-text', createdAt: 1, text: 'short' } as Message]);
+            expect(mocks.context).toHaveLength(1);
+
+            mocks.context.length = 0;
+            voiceHooks.onMessages(A, [{ id: 'm1', kind: 'agent-text', createdAt: 1, text: 'z'.repeat(3000) } as Message]);
+            expect(mocks.context).toHaveLength(1);
+        });
+    });
 });

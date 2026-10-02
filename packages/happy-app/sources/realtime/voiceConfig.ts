@@ -70,6 +70,24 @@ export interface VoiceConfig {
      * the assistant asking the session for detail it actually needs.
      */
     MAX_MESSAGE_CHARS: number;
+    /**
+     * Longest combined payload for one new-message injection, in characters.
+     *
+     * The per-message cap above bounds one message; this bounds the batch, and
+     * without it the batch is the hole. A busy session delivers a dozen changed
+     * rows in one update, each clipped to the per-message cap, so a single
+     * injection could reach ~8,000 characters (~2,500 tokens) — and everything
+     * injected stays in the realtime context and is re-billed on every later
+     * turn. Measured on a live desktop session: three voice turns billed
+     * 61,935 input tokens, growing 8.7k → 40.4k, with individual injections
+     * costing 1,000–2,500 tokens each.
+     *
+     * The newest messages are kept, because a batch is a burst of progress and
+     * the end of it is where the session got to. Older ones are dropped with a
+     * marker rather than silently, so the assistant knows it is not seeing
+     * everything and can ask the agent for detail.
+     */
+    MAX_INJECTION_CHARS: number;
 }
 
 /**
@@ -93,6 +111,7 @@ const FULL: VoiceConfig = {
     INCLUDE_SESSION_DIRECTORY: true,
     RESET_AFTER_TURNS: null,
     MAX_MESSAGE_CHARS: 4000,
+    MAX_INJECTION_CHARS: 8000,
 };
 
 /**
@@ -109,6 +128,7 @@ const LITE: VoiceConfig = {
     INCLUDE_SESSION_DIRECTORY: true,
     RESET_AFTER_TURNS: 20,
     MAX_MESSAGE_CHARS: 700,
+    MAX_INJECTION_CHARS: 2000,
 };
 
 /**
@@ -126,6 +146,7 @@ const MINIMAL: VoiceConfig = {
     ENABLE_DEBUG_LOGGING: false,
     RESET_AFTER_TURNS: 10,
     MAX_MESSAGE_CHARS: 300,
+    MAX_INJECTION_CHARS: 900,
 };
 
 export const VOICE_CONFIGS: Record<VoiceContextMode, VoiceConfig> = {

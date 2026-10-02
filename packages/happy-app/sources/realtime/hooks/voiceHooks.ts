@@ -367,12 +367,24 @@ export const voiceHooks = {
         // Only what has not been sent before, and only the parts that have
         // changed since. See `injectedMessageText`.
         const agentName = agentNameFor(sessionId);
+        const cap = currentConfig.MAX_MESSAGE_CHARS;
         const fresh: Message[] = [];
         let suppressed = 0;
         for (const message of messages) {
             const text = formatMessage(message, currentConfig, agentName);
             if (!text) continue;
-            if (injectedMessageText.get(message.id) === text) {
+            const previous = injectedMessageText.get(message.id);
+            if (previous === text) {
+                suppressed += 1;
+                continue;
+            }
+            // Text that streams in grows at the end, and each growth arrives as
+            // a new update. Once the previous version was already clipped, the
+            // part the assistant can see cannot change — only the amount it is
+            // not shown, which is a number in the truncation marker. Re-sending
+            // it re-bills the same prefix and appends a near-copy beside it,
+            // because the realtime context only ever grows.
+            if (previous && previous.length > cap && text.startsWith(previous.slice(0, cap))) {
                 suppressed += 1;
                 continue;
             }
