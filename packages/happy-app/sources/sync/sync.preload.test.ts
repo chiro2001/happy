@@ -290,6 +290,43 @@ describe('chat preload sync integration', () => {
         expect(mocks.voiceReady).not.toHaveBeenCalled();
     });
 
+    it('does not push fetched history as new messages', async () => {
+        // The same rule as the completion notices above, for the same reason,
+        // and the one the user hit: switching to a session made the client load
+        // its pages, and every page went to the assistant as "new messages in
+        // session" — five batches in four seconds on a live desktop session,
+        // each filling the tier's injection budget. Roughly 2,500 tokens of the
+        // session's past, re-billed on every later turn, and it buries what the
+        // session is doing now, which is what the assistant was asked for.
+        //
+        // `onSessionFocus` is what introduces a session the user has just
+        // switched to, and it does so once and in order.
+        mocks.applyMessages.mockImplementation(() => ({
+            changed: ['message'], settledMessageIds: [], readyTurns: [], enteredPlanMode: false,
+        }));
+        // Drive the history path directly: this is the call `applyFetchedMessages`
+        // makes once a page has been decrypted and normalized.
+        engine.applyMessages('a', [message()], 'history');
+
+        expect(mocks.applyMessages).toHaveBeenCalled();
+        // The store still saw the page — the chat needs it — but voice did not.
+        expect(mocks.voiceMessages).not.toHaveBeenCalled();
+    });
+
+    it('still pushes a message that arrived live', async () => {
+        // The exclusion above must not silence the feature: output produced
+        // while the user is watching still reaches the assistant.
+        mocks.applyMessages.mockImplementation(() => ({
+            changed: ['message'], settledMessageIds: [], readyTurns: [], enteredPlanMode: false,
+        }));
+        mocks.state.sessionMessages.a = { messagesMap: { message: { id: 'message', kind: 'agent-text', createdAt: 1, text: 'hi' } } };
+
+        engine.applyMessages('a', [message()], 'sync');
+
+        expect(mocks.voiceMessages).toHaveBeenCalledOnce();
+        delete mocks.state.sessionMessages.a;
+    });
+
     it('announces a completion that arrived while the client was live', async () => {
         mocks.applyMessages.mockImplementation(() => ({
             changed: [], settledMessageIds: [], enteredPlanMode: false,
@@ -339,8 +376,10 @@ describe('chat preload sync integration', () => {
         // and still tells voice what the session contains, but it does not
         // announce completions for turns that ended before this client ran.
         expect(mocks.applyMessages.mock.calls[0][2]).toBe('history');
-        expect(mocks.voiceMessages).toHaveBeenCalledOnce();
         expect(mocks.voiceFocus).toHaveBeenCalledWith('a', {});
+        // The page itself is history, so it is not announced as new messages —
+        // `onSessionFocus` above is what introduces the session to voice, once.
+        expect(mocks.voiceMessages).not.toHaveBeenCalled();
     });
 
     it('revalidates a completed preload and starts older history only after a visit', async () => {

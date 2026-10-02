@@ -3272,21 +3272,35 @@ class Sync {
             }
             return;
         }
-        // Settle-only changes re-render an existing row; announcing one to
-        // voice would repeat "User sent message" when its receipt arrives.
-        const settledOnly = new Set(result.settledMessageIds);
-        let m: Message[] = [];
-        for (let messageId of result.changed) {
-            if (settledOnly.has(messageId)) {
-                continue;
+        // Fetched history is not news, and pushing it as news is expensive in
+        // both senses. The client loads a session's pages when it is opened, so
+        // switching to a session handed the assistant the session's whole
+        // recent past as if it had just happened — five batches in four seconds
+        // on a live desktop session, each filling the tier's injection budget,
+        // for ~2,500 tokens of context that then stays and is re-billed on
+        // every later turn. Worse, it buries the one thing the assistant
+        // actually needed, which is what the session is doing *now*.
+        //
+        // A live message arrives as `sync`, and that is the only source this
+        // may report. `onSessionFocus` is what introduces a session the user
+        // has just switched to, and it does so once, in order.
+        if (source !== 'history') {
+            // Settle-only changes re-render an existing row; announcing one to
+            // voice would repeat "User sent message" when its receipt arrives.
+            const settledOnly = new Set(result.settledMessageIds);
+            const m: Message[] = [];
+            for (let messageId of result.changed) {
+                if (settledOnly.has(messageId)) {
+                    continue;
+                }
+                const message = storage.getState().sessionMessages[sessionId]?.messagesMap[messageId];
+                if (message) {
+                    m.push(message);
+                }
             }
-            const message = storage.getState().sessionMessages[sessionId].messagesMap[messageId];
-            if (message) {
-                m.push(message);
+            if (m.length > 0) {
+                voiceHooks.onMessages(sessionId, m);
             }
-        }
-        if (m.length > 0) {
-            voiceHooks.onMessages(sessionId, m);
         }
         // Every turn that ended in this batch, in order. The voice layer
         // announces each one at most once, and stays quiet about a turn the
