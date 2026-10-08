@@ -124,6 +124,7 @@ describe('modelModeOptions', () => {
         const models = getCodexModelModes();
         expect(models.map((model) => model.key)).toEqual([
             'gpt-6-astra',
+            'gpt-6.1-sol',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
@@ -174,7 +175,7 @@ describe('modelModeOptions', () => {
             ...models.map((model) => model.key),
             'my-workspace-model',
         ]);
-        expect(models).toHaveLength(9);
+        expect(models).toHaveLength(10);
         expect(includeConfiguredModel('claude', models, 'my-workspace-model')).toBe(models);
     });
 
@@ -205,6 +206,9 @@ describe('modelModeOptions', () => {
         // ultra, luna does not. The difference is the whole point of asking
         // per model rather than per flavor.
         expect(getEffortLevelsForModel('codex', 'gpt-6-astra').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+        // 6.1 publishes the same six levels as astra and sol — `ultra` included.
+        expect(getEffortLevelsForModel('codex', 'gpt-6.1-sol').map((level) => level.key))
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
         expect(getEffortLevelsForModel('codex', 'gpt-5.6-sol').map((level) => level.key))
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
