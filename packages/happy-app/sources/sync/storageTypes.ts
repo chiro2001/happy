@@ -41,7 +41,9 @@ export const MetadataSchema = z.object({
         contextWindow: z.number().optional(),
         serviceTiers: z.array(z.string()).optional(),
         thinkingLevels: z.array(z.string()).optional(),
-        defaultThinkingLevel: z.string().optional(),
+        // nullish: a harness that publishes the key without a choice states no
+        // default, and "no default" must not fail the whole metadata parse.
+        defaultThinkingLevel: z.string().nullish(),
     }).passthrough()).optional(),
     currentModelCode: z.string().optional(),
     operatingModes: z.array(z.object({
@@ -578,6 +580,25 @@ export const MachineMetadataSchema = z.object({
         requiresHappyAgentAuth: z.boolean().optional(),
         happyAgentAuthenticated: z.boolean().optional(),
         detectedAt: z.number().optional(),
+    }).passthrough().optional().catch(undefined),
+    // Models the machine published for one of its agents, keyed by flavor, so a
+    // new session can offer them before any session exists. Codex is the first:
+    // its registry comes from `model_catalog_json`, which only the machine can
+    // read — a gateway model added there exists in no Happy release, and the
+    // composer would otherwise have no way to offer it. Catches per block for
+    // the same reason the Rig catalog does: a rejected parse would null the
+    // whole machine.
+    modelCatalogs: z.object({
+        codex: z.object({
+            models: z.array(z.object({
+                code: z.string(),
+                value: z.string(),
+                description: z.string().nullish(),
+                thinkingLevels: z.array(z.string()).optional(),
+                defaultThinkingLevel: z.string().nullish(),
+                serviceTiers: z.array(z.string()).optional(),
+            }).passthrough()).optional().catch(undefined),
+        }).passthrough().optional().catch(undefined),
     }).passthrough().optional().catch(undefined),
 }).passthrough();
 

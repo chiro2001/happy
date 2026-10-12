@@ -16,12 +16,11 @@ import { isMachineOnline } from '@/utils/machineUtils';
 import { resolveAbsolutePath } from '@/utils/pathUtils';
 import { createWorktree } from '@/utils/worktree';
 import {
-    getEffortLevelsForModel,
-    getHardcodedModelModes,
     getHardcodedPermissionModes,
+    getNewSessionEffortLevels,
+    getNewSessionModelModes,
     filterPermissionModesForCli,
     getSupportsWorktree,
-    includeConfiguredModel,
 } from '@/components/modelModeOptions';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -334,9 +333,10 @@ export function useStartSessionFromDraft() {
                 : [draft.permissionMode, defaults.permissionMode, rigCreation ? null : getCodeAgentDefaults(agentType, machine.metadata?.happyCliVersion).permissionMode],
         );
         const model = resolveOption<{ key: string }>(
-            rigCreation?.models ?? includeConfiguredModel(
+            rigCreation?.models ?? getNewSessionModelModes(
                 agentType,
-                getHardcodedModelModes(agentType, t),
+                machine.metadata,
+                t,
                 defaults.modelMode,
             ),
             agentChanged
@@ -348,7 +348,7 @@ export function useStartSessionFromDraft() {
         const effort = resolveOption<{ key: string }>(
             rigCreation
                 ? rigCreation.effortsForModel(model?.key).map((key) => ({ key, name: key }))
-                : getEffortLevelsForModel(agentType, model?.key ?? 'default'),
+                : getNewSessionEffortLevels(agentType, machine.metadata, model?.key ?? 'default'),
             agentChanged
                 ? [effortDefault]
                 : [draft.effortLevel, effortDefault],

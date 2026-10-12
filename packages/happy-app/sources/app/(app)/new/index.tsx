@@ -60,10 +60,9 @@ import {
 import {
     filterPermissionModesForCli,
     getHardcodedPermissionModes,
-    getHardcodedModelModes,
-    getEffortLevelsForModel,
+    getNewSessionEffortLevels,
+    getNewSessionModelModes,
     getSupportsWorktree,
-    includeConfiguredModel,
     type PermissionMode,
     type ModelMode,
     type EffortLevel,
@@ -1109,12 +1108,13 @@ function NewSessionScreen() {
         }
         : resolveAgentDefaultConfig(agentDefaultOverrides, selectedAgent, happyCliVersion), [agentDefaultOverrides, happyCliVersion, selectedAgent, rigCreation]);
     const modelModes = React.useMemo<ModelMode[]>(
-        () => rigCreation?.models ?? includeConfiguredModel(
+        () => rigCreation?.models ?? getNewSessionModelModes(
             selectedAgent,
-            getHardcodedModelModes(selectedAgent, t),
+            selectedMachine?.metadata,
+            t,
             effectiveAgentDefaults.modelMode,
         ),
-        [selectedAgent, effectiveAgentDefaults.modelMode, rigCreation],
+        [selectedAgent, effectiveAgentDefaults.modelMode, rigCreation, selectedMachine],
     );
 
     const currentModel = resolveSelectedOption(modelModes, modelIndex);
@@ -1123,8 +1123,8 @@ function NewSessionScreen() {
     const effortLevels = React.useMemo<EffortLevel[]>(
         () => rigCreation
             ? rigCreation.effortsForModel(currentModelKey).map((key) => ({ key, name: key }))
-            : getEffortLevelsForModel(selectedAgent, currentModelKey),
-        [selectedAgent, currentModelKey, rigCreation],
+            : getNewSessionEffortLevels(selectedAgent, selectedMachine?.metadata, currentModelKey),
+        [selectedAgent, currentModelKey, rigCreation, selectedMachine],
     );
     const effectiveEffortDefault = rigCreation?.defaultEffortForModel(currentModelKey)
         ?? effectiveAgentDefaults.effortLevel;

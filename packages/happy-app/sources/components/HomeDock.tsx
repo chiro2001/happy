@@ -51,13 +51,12 @@ import {
 } from '@/sync/machineChoices';
 import type { Session } from '@/sync/storageTypes';
 import {
-    getEffortLevelsForModel,
-    getHardcodedModelModes,
     getHardcodedPermissionModes,
+    getNewSessionEffortLevels,
+    getNewSessionModelModes,
     filterPermissionModesForCli,
     getSupportsWorktree,
     groupModelModesByProvider,
-    includeConfiguredModel,
     truncateModelLabel,
     type ModeOption,
 } from './modelModeOptions';
@@ -1047,12 +1046,13 @@ export const HomeDock = React.memo(({
         [agentType, happyCliVersion, rigCreation],
     );
     const modelOptions = React.useMemo(
-        () => rigCreation?.models ?? includeConfiguredModel(
+        () => rigCreation?.models ?? getNewSessionModelModes(
             agentType,
-            getHardcodedModelModes(agentType, t),
+            selectedChoice?.happyMachine?.metadata,
+            t,
             defaults.modelMode,
         ),
-        [agentType, defaults.modelMode, rigCreation],
+        [agentType, defaults.modelMode, rigCreation, selectedChoice],
     );
     // The code default last: when the saved and configured modes were both
     // filtered out for an old CLI, land there rather than on whichever mode
@@ -1066,8 +1066,8 @@ export const HomeDock = React.memo(({
     const effortOptions = React.useMemo(
         () => rigCreation
             ? rigCreation.effortsForModel(currentModel?.key).map((key) => ({ key, name: key }))
-            : getEffortLevelsForModel(agentType, currentModel?.key ?? 'default'),
-        [agentType, currentModel?.key, rigCreation],
+            : getNewSessionEffortLevels(agentType, selectedChoice?.happyMachine?.metadata, currentModel?.key ?? 'default'),
+        [agentType, currentModel?.key, rigCreation, selectedChoice],
     );
     const currentEffortDefault = rigCreation?.defaultEffortForModel(currentModel?.key)
         ?? defaults.effortLevel;

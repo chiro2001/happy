@@ -1,4 +1,4 @@
-import type { Metadata } from '@/sync/storageTypes';
+import type { MachineMetadata, Metadata } from '@/sync/storageTypes';
 import { hackModes } from '@/sync/modeHacks';
 import { sortPermissionModes } from '@/utils/permissionModeLabels';
 import { sortRigModelsForPicker } from '@/utils/rigModelPickerOrder';
@@ -42,6 +42,28 @@ export type ModelModeProviderGroup = {
     key: string;
     title: string | null;
     models: ModelMode[];
+};
+
+/**
+ * One model as a backend publishes it: `code` is what the wire accepts, `value`
+ * is what a person reads, and the rest is whatever that backend knows about the
+ * model's range. Session metadata (`Metadata.models`) and a machine's published
+ * catalog (`MachineMetadata.modelCatalogs`) share this shape on purpose — the
+ * same rows have to be built from either.
+ */
+export type CatalogModelEntry = {
+    code: string;
+    value: string;
+    description?: string | null;
+    id?: string;
+    name?: string;
+    providerId?: string;
+    providerKind?: string;
+    providerName?: string;
+    contextWindow?: number;
+    serviceTiers?: string[];
+    thinkingLevels?: string[];
+    defaultThinkingLevel?: string | null;
 };
 
 /**
@@ -100,6 +122,107 @@ export function mapMetadataOptions(options?: MetadataOption[] | null): ModeOptio
         name: option.value,
         description: option.description ?? null,
     }));
+}
+
+/**
+ * Who serves a Codex registry entry, for the picker's provider sections.
+ *
+ * `model/list` answers with an id and a display name and nothing else: which
+ * provider actually answers is resolved from config when a turn runs. The
+ * prefixes below are the ones Happy's own Codex list has always grouped by
+ * (its gateway rows), so a catalog-driven picker keeps the sections it showed
+ * before. An entry matching none of them is listed without a provider rather
+ * than guessed at.
+ */
+const CODEX_PROVIDER_HINTS: Array<{ prefix: string; providerId: string; providerName: string }> = [
+    { prefix: 'gpt-', providerId: 'openai', providerName: 'OpenAI' },
+    { prefix: 'codex-', providerId: 'openai', providerName: 'OpenAI' },
+    { prefix: 'deepseek-', providerId: 'deepseek', providerName: 'DeepSeek' },
+    { prefix: 'glm-', providerId: 'zhipu', providerName: 'Zhipu' },
+];
+
+/**
+ * Catalog entries as picker rows.
+ *
+ * The declared reasoning levels ride along, and that is the point: they are
+ * what lets a model newer than this app — a gateway model that exists only in
+ * one machine's registry — get a correct effort picker instead of the
+ * conservative fallback. Provider hints only apply to Codex, whose registry
+ * says nothing about providers; a harness that publishes its own provider
+ * fields keeps them.
+ */
+export function getCatalogModelModes(
+    entries: readonly CatalogModelEntry[] | null | undefined,
+    flavor: AgentFlavor,
+): ModelMode[] {
+    const models: ModelMode[] = [];
+    for (const entry of entries ?? []) {
+        const key = entry.code?.trim();
+        if (!key) {
+            continue;
+        }
+        const hint = flavor === 'codex'
+            ? CODEX_PROVIDER_HINTS.find((candidate) => key.startsWith(candidate.prefix))
+            : undefined;
+        const model: ModelMode = {
+            key,
+            name: entry.value?.trim() || key,
+            description: entry.description ?? null,
+        };
+        // Only the keys the entry actually carried. A capability a backend
+        // never mentioned and one it deliberately left out mean the same thing
+        // to the picker, and an `undefined` in its place would travel through
+        // comparisons as a value.
+        const providerId = entry.providerId ?? hint?.providerId;
+        const providerName = entry.providerName ?? hint?.providerName;
+        if (entry.id !== undefined) model.modelId = entry.id;
+        if (providerId !== undefined) model.providerId = providerId;
+        if (providerName !== undefined) model.providerName = providerName;
+        if (entry.providerKind !== undefined) model.providerKind = entry.providerKind;
+        if (entry.contextWindow !== undefined) model.contextWindow = entry.contextWindow;
+        if (entry.serviceTiers !== undefined) model.serviceTiers = entry.serviceTiers;
+        if (entry.thinkingLevels !== undefined) model.thinkingLevels = entry.thinkingLevels;
+        if (entry.defaultThinkingLevel !== undefined) model.defaultThinkingLevel = entry.defaultThinkingLevel;
+        models.push(model);
+    }
+    return models;
+}
+
+/** The models a machine published for one agent, or null when it published none. */
+export function getMachineModelCatalog(
+    metadata: MachineMetadata | null | undefined,
+    flavor: AgentFlavor,
+): CatalogModelEntry[] | null {
+    if (!flavor) {
+        return null;
+    }
+    const catalog = (metadata?.modelCatalogs as Record<string, { models?: CatalogModelEntry[] } | undefined> | undefined)?.[flavor];
+    return catalog?.models && catalog.models.length > 0 ? catalog.models : null;
+}
+
+/**
+ * Several machines' catalogs as one list, first listing wins.
+ *
+ * Used where a choice is account-wide rather than per machine: the model a
+ * person sets as their Codex default has to exist on the machine a session is
+ * later started on, and which machine that is need not be settled yet.
+ */
+export function mergeCatalogModelEntries(
+    catalogs: ReadonlyArray<readonly CatalogModelEntry[] | null | undefined>,
+): CatalogModelEntry[] {
+    const merged: CatalogModelEntry[] = [];
+    const seen = new Set<string>();
+    for (const catalog of catalogs) {
+        for (const entry of catalog ?? []) {
+            const code = entry?.code?.trim();
+            if (!code || seen.has(code)) {
+                continue;
+            }
+            seen.add(code);
+            merged.push(entry);
+        }
+    }
+    return merged;
 }
 
 // Mode names are deliberately untranslated single words, because the composer
@@ -437,17 +560,91 @@ export function getAvailableModels(
         }
         return models;
     }
-    const metadataModels = mapMetadataOptions(metadata?.models);
+    const metadataModels = getCatalogModelModes(metadata?.models, flavor);
     if (metadataModels.length > 0) {
-        if (flavor === 'codex' && !metadataModels.some((model) => model.key === 'default')) {
-            return [{ key: 'default', name: 'default model', description: null }, ...metadataModels];
-        }
-        return metadataModels;
+        const models = flavor === 'codex' && !metadataModels.some((model) => model.key === 'default')
+            ? [{ key: 'default', name: 'default model', description: null }, ...metadataModels]
+            : metadataModels;
+        // The catalog is the machine's, but the pick can be older than it: a
+        // saved model that has since left the registry (or a default this app
+        // ships) still has to be visible as the selected row, rather than
+        // leaving the composer showing nothing while sending that very model.
+        return includeConfiguredModel(flavor, models, selectedKey);
     }
     return includeConfiguredModel(
         flavor,
         getHardcodedModelModes(flavor, translate),
         selectedKey,
+    );
+}
+
+/**
+ * Model rows for a session that does not exist yet.
+ *
+ * A new session has no metadata of its own to read, so the machine's published
+ * catalog is what stands in for it: a machine whose Codex registry lists
+ * gateway models offers those, and a machine that published nothing (an older
+ * Happy CLI) keeps the hardcoded list this app ships. The picker and the spawn
+ * that follows it read the same rows from here, so the model a person selects
+ * is the model the machine is started with.
+ */
+export function getNewSessionModelModes(
+    flavor: AgentFlavor,
+    machineMetadata: MachineMetadata | null | undefined,
+    translate: Translate,
+    selectedKey?: string | null,
+): ModelMode[] {
+    const catalog = getMachineModelCatalog(machineMetadata, flavor);
+    return includeConfiguredModel(
+        flavor,
+        catalog ? getCatalogModelModes(catalog, flavor) : getHardcodedModelModes(flavor, translate),
+        selectedKey,
+    );
+}
+
+/** Effort rows for a new session, from the machine's catalog when there is one. */
+export function getNewSessionEffortLevels(
+    flavor: AgentFlavor,
+    machineMetadata: MachineMetadata | null | undefined,
+    modelKey: string | null | undefined,
+): EffortLevel[] {
+    return resolveEffortLevelsForModel(flavor, modelKey, getMachineModelCatalog(machineMetadata, flavor));
+}
+
+/**
+ * Model rows for an account-wide agent default.
+ *
+ * The default is stored per agent rather than per machine, so it has to be
+ * picked from what any of the account's machines can run: a gateway model only
+ * one machine's registry declares is still a valid default for sessions
+ * started there. Machines are read in the order they are offered.
+ */
+export function getAgentDefaultModelModes(
+    machineMetadata: ReadonlyArray<MachineMetadata | null | undefined>,
+    flavor: AgentFlavor,
+    translate: Translate,
+    selectedKey?: string | null,
+): ModelMode[] {
+    const catalog = mergeCatalogModelEntries(
+        machineMetadata.map((metadata) => getMachineModelCatalog(metadata, flavor)),
+    );
+    return includeConfiguredModel(
+        flavor,
+        catalog.length > 0 ? getCatalogModelModes(catalog, flavor) : getHardcodedModelModes(flavor, translate),
+        selectedKey,
+    );
+}
+
+/** Effort rows for an account-wide agent default, from the same merged catalogs. */
+export function getAgentDefaultEffortLevels(
+    machineMetadata: ReadonlyArray<MachineMetadata | null | undefined>,
+    flavor: AgentFlavor,
+    modelKey: string | null | undefined,
+): EffortLevel[] {
+    return resolveEffortLevelsForModel(
+        flavor,
+        modelKey,
+        mergeCatalogModelEntries(machineMetadata.map((metadata) => getMachineModelCatalog(metadata, flavor))),
     );
 }
 
@@ -537,7 +734,17 @@ export function effortDisplayName(key: string): string {
 }
 
 function effortLevels(keys: readonly string[]): EffortLevel[] {
-    return keys.map((key) => ({ key, name: effortDisplayName(key) }));
+    const seen = new Set<string>();
+    const levels: EffortLevel[] = [];
+    for (const key of keys) {
+        const trimmed = key.trim();
+        if (!trimmed || seen.has(trimmed)) {
+            continue;
+        }
+        seen.add(trimmed);
+        levels.push({ key: trimmed, name: effortDisplayName(trimmed) });
+    }
+    return levels;
 }
 
 // The Claude Agent SDK's own EffortLevel union, in order
@@ -627,6 +834,36 @@ export function getDefaultEffortKey(flavor: AgentFlavor): string | null {
     return getCodeAgentDefaults(flavor).effortLevel;
 }
 
+/**
+ * Per-model effort rows.
+ *
+ * A model that declared its own levels wins over the hardcoded table: this is
+ * the one place a model newer than the app — a gateway model that exists only
+ * in one machine's registry — can get a correct effort picker without a Happy
+ * release. Everything else keeps the table above, which stays authoritative
+ * for the models it knows.
+ */
+export function resolveEffortLevelsForModel(
+    flavor: AgentFlavor,
+    modelKey: string | null | undefined,
+    catalog: readonly CatalogModelEntry[] | null | undefined,
+): EffortLevel[] {
+    const declared = (modelKey ? catalog?.find((entry) => entry.code === modelKey)?.thinkingLevels : undefined) ?? [];
+    if (declared.length > 0) {
+        return effortLevels(declared);
+    }
+    if (flavor === 'claude') {
+        return getClaudeEffortLevels();
+    }
+    if (flavor === 'codex') {
+        return getCodexEffortLevels(modelKey);
+    }
+    if (flavor === 'agy') {
+        return getAgyEffortLevels(modelKey);
+    }
+    return [];
+}
+
 // Per-model effort: returns effort levels for a specific model, or empty if the model has no effort
 export function getEffortLevelsForModel(
     flavor: AgentFlavor,
@@ -643,17 +880,8 @@ export function getEffortLevelsForModel(
     // one union for every model, and a level the chosen model cannot reach is
     // silently downgraded rather than rejected (sdk.d.ts:174). Codex is the
     // opposite — each model publishes its own supported levels — so it is asked
-    // per model.
-    if (flavor === 'claude') {
-        return getClaudeEffortLevels();
-    }
-    if (flavor === 'codex') {
-        return getCodexEffortLevels(modelKey);
-    }
-    if (flavor === 'agy') {
-        return getAgyEffortLevels(modelKey);
-    }
-    return [];
+    // per model, from the session's own catalog when it published one.
+    return resolveEffortLevelsForModel(flavor, modelKey, metadata?.models);
 }
 
 export function getRigCurrentModelOptionKey(metadata: Metadata | null | undefined): string | null {

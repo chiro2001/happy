@@ -5,10 +5,9 @@ import { Item } from '@/components/Item';
 import { ItemGroup } from '@/components/ItemGroup';
 import { ItemList } from '@/components/ItemList';
 import {
-    getEffortLevelsForModel,
-    getHardcodedModelModes,
+    getAgentDefaultEffortLevels,
+    getAgentDefaultModelModes,
     getHardcodedPermissionModes,
-    includeConfiguredModel,
     type ModeOption,
 } from '@/components/modelModeOptions';
 import { useAllMachines, useSettingMutable } from '@/sync/storage';
@@ -236,12 +235,23 @@ export default function AgentsSettingsScreen() {
                 const codeDefaults = getCodeAgentDefaults(agent);
                 const effectiveDefaults = resolveAgentDefaultConfig(agentDefaultOverrides, agent);
                 const permissionOptions = getHardcodedPermissionModes(agent, t);
-                const modelOptions = includeConfiguredModel(
+                // A default is account-wide, so the machines are read as a set:
+                // a model that exists only in one machine's registry is still a
+                // valid default for sessions started on that machine.
+                const machineCatalogs = machineChoices
+                    .map((choice) => choice.happyMachine?.metadata)
+                    .filter((metadata) => metadata !== undefined);
+                const modelOptions = getAgentDefaultModelModes(
+                    machineCatalogs,
                     agent,
-                    getHardcodedModelModes(agent, t),
+                    t,
                     effectiveDefaults.modelMode,
                 ).filter((option) => option.key !== 'default');
-                const effortOptions = getEffortLevelsForModel(agent, effectiveDefaults.modelMode);
+                const effortOptions = getAgentDefaultEffortLevels(
+                    machineCatalogs,
+                    agent,
+                    effectiveDefaults.modelMode,
+                );
                 const fields: FieldConfig[] = [
                     {
                         field: 'permissionMode',

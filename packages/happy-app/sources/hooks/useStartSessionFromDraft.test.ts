@@ -110,28 +110,12 @@ vi.mock('@/utils/worktree', () => ({
 
 vi.mock('@/utils/time', () => ({ delay: mocks.delay }));
 
-vi.mock('@/components/modelModeOptions', () => ({
-    filterPermissionModesForCli: (modes: any[], cliVersion?: string) => (
-        cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1'
-            ? modes.filter((mode) => mode.key !== 'auto')
-            : modes
-    ),
-    getHardcodedPermissionModes: () => [
-        { key: 'auto', name: 'Auto' },
-        { key: 'default', name: 'Default' },
-        { key: 'safe-yolo', name: 'Safe YOLO' },
-        { key: 'yolo', name: 'YOLO' },
-        { key: 'bypassPermissions', name: 'YOLO' },
-    ],
-    getHardcodedModelModes: () => [
+vi.mock('@/components/modelModeOptions', () => {
+    const hardcodedModels = () => [
         { key: 'default', name: 'Default' },
         { key: 'opus', name: 'Opus' },
-    ],
-    getEffortLevelsForModel: () => [
-        { key: 'medium', name: 'Medium' },
-    ],
-    getSupportsWorktree: (agentType: string) => agentType !== 'openclaw',
-    includeConfiguredModel: (
+    ];
+    const includeConfiguredModel = (
         flavor: string,
         models: Array<{ key: string; name: string }>,
         configuredModelKey?: string | null,
@@ -140,8 +124,40 @@ vi.mock('@/components/modelModeOptions', () => ({
         && configuredModelKey !== 'default'
         && !models.some((model) => model.key === configuredModelKey)
         ? [...models, { key: configuredModelKey, name: configuredModelKey }]
-        : models,
-}));
+        : models;
+
+    return {
+        filterPermissionModesForCli: (modes: any[], cliVersion?: string) => (
+            cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1'
+                ? modes.filter((mode) => mode.key !== 'auto')
+                : modes
+        ),
+        getHardcodedPermissionModes: () => [
+            { key: 'auto', name: 'Auto' },
+            { key: 'default', name: 'Default' },
+            { key: 'safe-yolo', name: 'Safe YOLO' },
+            { key: 'yolo', name: 'YOLO' },
+            { key: 'bypassPermissions', name: 'YOLO' },
+        ],
+        getHardcodedModelModes: hardcodedModels,
+        // No machine in these tests publishes a model catalog — that path has
+        // its own tests — so the hardcoded list is what the spawn resolves.
+        getNewSessionModelModes: (
+            flavor: string,
+            _machineMetadata: unknown,
+            _translate: unknown,
+            configuredModelKey?: string | null,
+        ) => includeConfiguredModel(flavor, hardcodedModels(), configuredModelKey),
+        getNewSessionEffortLevels: () => [
+            { key: 'medium', name: 'Medium' },
+        ],
+        getEffortLevelsForModel: () => [
+            { key: 'medium', name: 'Medium' },
+        ],
+        getSupportsWorktree: (agentType: string) => agentType !== 'openclaw',
+        includeConfiguredModel,
+    };
+});
 
 vi.mock('@/modal', () => ({
     Modal: {

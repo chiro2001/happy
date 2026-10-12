@@ -141,6 +141,59 @@ describe('MachineMetadataSchema', () => {
         expect(metadata.platform).toBe('darwin');
         expect(metadata.cliAvailability?.rig).toBe(true);
     });
+
+    it('reads the model catalog a machine published for its Codex', () => {
+        const metadata = MachineMetadataSchema.parse({
+            ...machineBase,
+            machineKind: undefined,
+            modelCatalogs: {
+                codex: {
+                    models: [{
+                        code: 'deepseek-flash',
+                        value: 'DeepSeek-Flash',
+                        description: 'Frontier agentic coding model with image input.',
+                        thinkingLevels: ['low', 'high', 'max'],
+                        defaultThinkingLevel: 'high',
+                    }],
+                },
+            },
+        });
+
+        expect(metadata.modelCatalogs?.codex?.models).toEqual([{
+            code: 'deepseek-flash',
+            value: 'DeepSeek-Flash',
+            description: 'Frontier agentic coding model with image input.',
+            thinkingLevels: ['low', 'high', 'max'],
+            defaultThinkingLevel: 'high',
+        }]);
+    });
+
+    it('drops an unreadable model catalog without losing the machine', () => {
+        // The catalog is the newest block a CLI can publish, so an app from
+        // before it — or a machine that sends one shape wrong — must degrade to
+        // "no catalog" rather than to "no machine".
+        const metadata = MachineMetadataSchema.parse({
+            ...machineBase,
+            modelCatalogs: { codex: { models: 'not-an-array' } },
+        });
+
+        expect(metadata.host).toBe('workstation');
+        expect(metadata.modelCatalogs?.codex?.models).toBeUndefined();
+    });
+
+    it('keeps a block this app version has never heard of, so another client’s write cannot drop it', () => {
+        // Version skew is the norm: a machine publishes something newer than
+        // this app (the model catalog was exactly that, before this app knew
+        // it), and this app then renames the machine — a read-modify-write of
+        // the whole metadata. Passthrough is what makes the rename carry the
+        // newer block along instead of silently erasing it for every client.
+        const parsed = MachineMetadataSchema.parse({
+            ...machineBase,
+            someFutureBlock: { nested: ['kept'] },
+        });
+
+        expect((parsed as Record<string, unknown>).someFutureBlock).toEqual({ nested: ['kept'] });
+    });
 });
 
 describe('AgentGoalStatusSchema', () => {

@@ -19,12 +19,17 @@ import {
     getDefaultPermissionModeKey,
     groupModelModesByProvider,
     includeConfiguredModel,
+    getAgentDefaultEffortLevels,
+    getAgentDefaultModelModes,
+    getNewSessionEffortLevels,
+    getNewSessionModelModes,
     getOpenClawPermissionModes,
     mapMetadataOptions,
     resolveCurrentOption,
 } from './modelModeOptions';
 import { sortPermissionModes } from '@/utils/permissionModeLabels';
 import { rigMetadataFixture } from '@/sync/__testdata__/rigMetadata';
+import { MachineMetadataSchema } from '@/sync/storageTypes';
 
 const translate = (key: string) => `tr:${key}`;
 
@@ -290,7 +295,15 @@ describe('modelModeOptions', () => {
 
         expect(models).toEqual([
             { key: 'default', name: 'default model', description: null },
-            { key: 'gpt-5.4', name: 'gpt-5.4', description: 'Latest' },
+            // The registry says nothing about who serves a model, so the picker
+            // keeps the provider section the hardcoded list grouped it under.
+            {
+                key: 'gpt-5.4',
+                name: 'gpt-5.4',
+                description: 'Latest',
+                providerId: 'openai',
+                providerName: 'OpenAI',
+            },
         ]);
     });
 
@@ -505,6 +518,138 @@ describe('modelModeOptions', () => {
 
     it('cuts mid-word only when there is no boundary to fall back on', () => {
         expect(truncateModelLabel('Supercalifragilisticexpialidocious'))
-            .toBe('Supercalifragili\u2026');
+           .toBe('Supercalifragili\u2026');
+    });
+
+    describe('the catalog a machine publishes', () => {
+        const machineCatalog = {
+            modelCatalogs: {
+                codex: {
+                    models: [
+                        {
+                            code: 'deepseek-flash',
+                            value: 'DeepSeek-Flash',
+                            description: 'Frontier agentic coding model with image input.',
+                            thinkingLevels: ['low', 'high', 'max'],
+                            defaultThinkingLevel: 'high',
+                        },
+                        { code: 'gpt-6.1-sol', value: 'GPT-6.1-Sol', thinkingLevels: ['low', 'ultra'] },
+                    ],
+                },
+            },
+        };
+
+        it('offers the machine’s registry in its own order, with the levels it declared', () => {
+            const models = getNewSessionModelModes('codex', machineCatalog as any, translate, 'gpt-6.1-sol');
+
+            expect(models.map((model) => model.key)).toEqual(['deepseek-flash', 'gpt-6.1-sol']);
+            expect(models[0]).toEqual({
+                key: 'deepseek-flash',
+                name: 'DeepSeek-Flash',
+                description: 'Frontier agentic coding model with image input.',
+                providerId: 'deepseek',
+                providerName: 'DeepSeek',
+                thinkingLevels: ['low', 'high', 'max'],
+                defaultThinkingLevel: 'high',
+            });
+        });
+
+        it('keeps a configured model selectable when the registry no longer lists it', () => {
+            // Settings live on the account, the registry on the machine: a
+            // saved pick can name a model this machine's Codex dropped, and the
+            // composer has to show it rather than silently display nothing.
+            const models = getNewSessionModelModes('codex', machineCatalog as any, translate, 'gpt-5.6-luna');
+
+            expect(models[models.length - 1]).toEqual({
+                key: 'gpt-5.6-luna',
+                name: 'gpt-5.6-luna',
+                description: 'custom model',
+            });
+        });
+
+        it('falls back to the hardcoded list when the machine published no catalog', () => {
+            const models = getNewSessionModelModes('codex', {} as any, translate, 'gpt-5.6-sol');
+            expect(models.map((model) => model.key)).toEqual(getCodexModelModes().map((model) => model.key));
+        });
+
+        it('gives a registry model the effort range its own registry declares', () => {
+            // The whole point of publishing levels: a model this app has never
+            // heard of gets its real range instead of the conservative fallback.
+            expect(getNewSessionEffortLevels('codex', machineCatalog as any, 'deepseek-flash').map((level) => level.key))
+                .toEqual(['low', 'high', 'max']);
+            expect(getEffortLevelsForModel('codex', 'deepseek-flash', {
+                models: machineCatalog.modelCatalogs.codex.models,
+            } as any).map((level) => level.key)).toEqual(['low', 'high', 'max']);
+            // A model the registry declared silently keeps the shipped table.
+            expect(getEffortLevelsForModel('codex', 'gpt-5.6-luna', {
+                models: machineCatalog.modelCatalogs.codex.models,
+            } as any).map((level) => level.key)).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+        });
+
+        it('appends the saved pick when a session’s catalog no longer lists it', () => {
+            const models = getAvailableModels('codex', {
+                models: [{ code: 'deepseek-flash', value: 'DeepSeek-Flash' }],
+            } as any, translate, 'gpt-5.6-sol');
+
+            expect(models.map((model) => model.key)).toEqual(['default', 'deepseek-flash', 'gpt-5.6-sol']);
+        });
+
+        it('merges what several machines can run into one default picker', () => {
+            // A default is account-wide, so a model that only one computer's
+            // registry declares is still selectable — sessions started on that
+            // computer will accept it.
+            const laptop = { modelCatalogs: { codex: { models: [{ code: 'deepseek-flash', value: 'DeepSeek-Flash' }] } } };
+            const desktop = { modelCatalogs: { codex: { models: [
+                { code: 'deepseek-flash', value: 'DeepSeek-Flash (duplicate)' },
+                { code: 'custom-gateway', value: 'Custom Gateway', thinkingLevels: ['low', 'high'] },
+            ] } } };
+
+            const models = getAgentDefaultModelModes([laptop as any, desktop as any], 'codex', translate, 'custom-gateway');
+            expect(models.map((model) => model.key)).toEqual(['deepseek-flash', 'custom-gateway']);
+            // First listing wins, so the duplicate on the desktop adds nothing.
+            expect(models[0].name).toBe('DeepSeek-Flash');
+            expect(getAgentDefaultEffortLevels([laptop as any, desktop as any], 'codex', 'custom-gateway').map((level) => level.key))
+                .toEqual(['low', 'high']);
+        });
+
+        it('keeps the shipped list for a default when no machine published a catalog', () => {
+            const models = getAgentDefaultModelModes([{} as any, null], 'codex', translate, 'gpt-5.6-sol');
+            expect(models.map((model) => model.key)).toEqual(getCodexModelModes().map((model) => model.key));
+        });
+
+        it('reads exactly the metadata shape a Happy CLI publishes', () => {
+            // The seam between the two packages: what the CLI's daemon writes
+            // has to survive this app's machine schema, or the catalog never
+            // reaches a picker. Both shapes are asserted apart elsewhere; this
+            // is the one place they are read together.
+            const parsed = MachineMetadataSchema.parse({
+                host: 'laptop',
+                platform: 'linux',
+                happyCliVersion: '1.2.5',
+                happyHomeDir: '/home/dev/.happy',
+                homeDir: '/home/dev',
+                cliAvailability: { claude: true, codex: true, gemini: false, openclaw: false, detectedAt: 1 },
+                modelCatalogs: {
+                    codex: {
+                        models: [
+                            {
+                                code: 'deepseek-v4-pro',
+                                value: 'DeepSeek-V4-Pro',
+                                description: 'gateway · most capable',
+                                thinkingLevels: ['low', 'high', 'max'],
+                                defaultThinkingLevel: 'high',
+                                serviceTiers: [],
+                            },
+                            { code: 'gpt-6.1-sol', value: 'GPT-6.1-Sol', thinkingLevels: ['low', 'ultra'] },
+                        ],
+                    },
+                },
+            });
+
+            expect(getNewSessionModelModes('codex', parsed, translate, 'gpt-5.6-sol').map((model) => model.key))
+                .toEqual(['deepseek-v4-pro', 'gpt-6.1-sol', 'gpt-5.6-sol']);
+            expect(getNewSessionEffortLevels('codex', parsed, 'deepseek-v4-pro').map((level) => level.key))
+                .toEqual(['low', 'high', 'max']);
+        });
     });
 });
