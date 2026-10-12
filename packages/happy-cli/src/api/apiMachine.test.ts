@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiMachineClient } from './apiMachine';
+import { detectCLIAvailability } from '@/utils/detectCLI';
 import type { Machine } from './types';
 
 const {
     mockIo,
-    mockShouldReconnect
+    mockShouldReconnect,
+    mockReadCodexModelCatalog
 } = vi.hoisted(() => ({
     mockIo: vi.fn(),
-    mockShouldReconnect: vi.fn(() => true)
+    mockShouldReconnect: vi.fn(() => true),
+    mockReadCodexModelCatalog: vi.fn(async () => null as null | Array<{ code: string; value: string }>)
 }));
 
 vi.mock('socket.io-client', () => ({
@@ -59,6 +62,10 @@ vi.mock('@/resume/localHappyAgentAuth', () => ({
         requiresHappyAgentAuth: false,
         happyAgentAuthenticated: false
     }))
+}));
+
+vi.mock('@/codex/modelCatalog', () => ({
+    readCodexModelCatalog: mockReadCodexModelCatalog
 }));
 
 vi.mock('@/utils/lidState', () => ({
@@ -260,5 +267,114 @@ describe('ApiMachineClient socket reconnection', () => {
         }));
 
         client.shutdown();
+    });
+
+    describe('model catalogs', () => {
+        /**
+         * Every machine metadata payload the client published, plus the ones
+         * that actually changed the catalog — an availability update carries
+         * the stored catalog along without deciding anything about it, so only
+         * the difference says whether the catalog was rewritten.
+         */
+        function trackPublishedMetadata(client: ApiMachineClient, machine: Machine) {
+            const catalogRewrites: unknown[] = [];
+            vi.spyOn(client, 'updateMachineMetadata').mockImplementation(async (handler) => {
+                const before = machine.metadata;
+                const next = handler(before);
+                if (JSON.stringify(before.modelCatalogs) !== JSON.stringify(next.modelCatalogs)) {
+                    catalogRewrites.push(next.modelCatalogs);
+                }
+                machine.metadata = next;
+            });
+            return catalogRewrites;
+        }
+
+        beforeEach(() => {
+            vi.mocked(detectCLIAvailability).mockReturnValue({
+                claude: false,
+                codex: true,
+                gemini: false,
+                openclaw: false,
+                agy: false,
+                detectedAt: 1,
+            });
+        });
+
+        afterEach(() => {
+            vi.mocked(detectCLIAvailability).mockReset();
+            vi.mocked(detectCLIAvailability).mockReturnValue({
+                claude: false,
+                codex: false,
+                gemini: false,
+                openclaw: false,
+                agy: false,
+                detectedAt: 0,
+            });
+        });
+
+        it('publishes the registry the machine’s Codex resolves', async () => {
+            vi.useFakeTimers();
+            mockSocket.emitWithAck.mockImplementation(() => new Promise(() => {}));
+            mockReadCodexModelCatalog.mockResolvedValue([
+                { code: 'deepseek-flash', value: 'DeepSeek-Flash' },
+            ]);
+            const machine = makeMachine();
+            const client = new ApiMachineClient('fake-token', machine);
+            const catalogRewrites = trackPublishedMetadata(client, machine);
+
+            client.connect();
+            emitSocketEvent('connect');
+            await vi.advanceTimersByTimeAsync(1);
+
+            expect(catalogRewrites).toEqual([
+                { codex: { models: [{ code: 'deepseek-flash', value: 'DeepSeek-Flash' }] } },
+            ]);
+
+            client.shutdown();
+        });
+
+        it('leaves the last published catalog alone when Codex has no registry to read', async () => {
+            vi.useFakeTimers();
+            mockSocket.emitWithAck.mockImplementation(() => new Promise(() => {}));
+            // An older Codex has no `model/list`: the daemon must not erase what
+            // the machine published before, and must not invent an empty list.
+            mockReadCodexModelCatalog.mockResolvedValue(null);
+            const machine = makeMachine();
+            machine.metadata.modelCatalogs = { codex: { models: [{ code: 'deepseek-flash', value: 'DeepSeek-Flash' }] } };
+            const client = new ApiMachineClient('fake-token', machine);
+            const catalogRewrites = trackPublishedMetadata(client, machine);
+
+            client.connect();
+            emitSocketEvent('connect');
+            await vi.advanceTimersByTimeAsync(1);
+
+            expect(mockReadCodexModelCatalog).toHaveBeenCalled();
+            expect(catalogRewrites).toEqual([]);
+            expect(machine.metadata.modelCatalogs).toEqual({
+                codex: { models: [{ code: 'deepseek-flash', value: 'DeepSeek-Flash' }] },
+            });
+
+            client.shutdown();
+        });
+
+        it('writes nothing when the published catalog has not changed', async () => {
+            vi.useFakeTimers();
+            mockSocket.emitWithAck.mockImplementation(() => new Promise(() => {}));
+            mockReadCodexModelCatalog.mockResolvedValue([
+                { code: 'deepseek-flash', value: 'DeepSeek-Flash' },
+            ]);
+            const machine = makeMachine();
+            machine.metadata.modelCatalogs = { codex: { models: [{ code: 'deepseek-flash', value: 'DeepSeek-Flash' }] } };
+            const client = new ApiMachineClient('fake-token', machine);
+            const catalogRewrites = trackPublishedMetadata(client, machine);
+
+            client.connect();
+            emitSocketEvent('connect');
+            await vi.advanceTimersByTimeAsync(1);
+
+            expect(catalogRewrites).toEqual([]);
+
+            client.shutdown();
+        });
     });
 });

@@ -157,6 +157,24 @@ export const MachineMetadataSchema = z.object({
     happyAgentAuthenticated: z.boolean(),
     detectedAt: z.number(),
   }).optional(),
+  /**
+   * Model registries this machine publishes for its agents, so a new session
+   * can offer the right models before any session exists. Codex is the first:
+   * its registry lives in `model_catalog_json`, which only the machine can
+   * read, and it decides whether a gateway model exists at all.
+   */
+  modelCatalogs: z.object({
+    codex: z.object({
+      models: z.array(z.object({
+        code: z.string(),
+        value: z.string(),
+        description: z.string().nullish(),
+        thinkingLevels: z.array(z.string()).optional(),
+        defaultThinkingLevel: z.string().nullish(),
+        serviceTiers: z.array(z.string()).optional(),
+      }).passthrough()),
+    }).passthrough().optional(),
+  }).passthrough().optional(),
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>
@@ -296,8 +314,19 @@ export type Metadata = {
   /**
    * ACP session config option value (normalized for UI metadata consumers).
    */
-  // `code` = protocol value ID, `value` = human label
-  models?: Array<{ code: string; value: string; description?: string | null }>,
+  // `code` = protocol value ID, `value` = human label. `thinkingLevels` /
+  // `defaultThinkingLevel` / `serviceTiers` are optional and only published by
+  // harnesses that know a model's own range (Codex's registry, ACP, Rig): the
+  // app prefers them over its hardcoded effort tables so a model newer than the
+  // app still gets the right effort picker.
+  models?: Array<{
+    code: string;
+    value: string;
+    description?: string | null;
+    thinkingLevels?: string[];
+    defaultThinkingLevel?: string | null;
+    serviceTiers?: string[];
+  }>,
   currentModelCode?: string,
   operatingModes?: Array<{ code: string; value: string; description?: string | null }>,
   currentOperatingModeCode?: string,

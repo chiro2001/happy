@@ -298,6 +298,48 @@ export type FileChange =
     | { type: "delete"; content: string }
     | { type: "update"; unified_diff: string; move_path: string | null };
 
+// --- Model registry (model/list) ---
+// The app-server's own answer to "which models does this machine have?". It is
+// the registry Codex resolves: its built-in list, or — when `model_catalog_json`
+// is set — the file it points at instead, which is the only place a user's
+// gateway models exist. Fields are optional because an older server omits what
+// it does not have (effort levels and service tiers arrived with newer
+// registries).
+
+export type CodexModelReasoningEffort = {
+    reasoningEffort: string;
+    description?: string;
+};
+
+export type CodexModelServiceTier = {
+    id: string;
+    name?: string;
+    description?: string;
+};
+
+export type CodexModelListEntry = {
+    /** Registry id — the value a turn's `model` accepts. */
+    model: string;
+    displayName?: string;
+    description?: string;
+    hidden?: boolean;
+    isDefault?: boolean;
+    supportedReasoningEfforts?: CodexModelReasoningEffort[];
+    defaultReasoningEffort?: string;
+    serviceTiers?: CodexModelServiceTier[];
+};
+
+export type ModelListParams = {
+    cursor?: string | null;
+    limit?: number | null;
+    includeHidden?: boolean | null;
+};
+
+export type ModelListResponse = {
+    data: CodexModelListEntry[];
+    nextCursor?: string | null;
+};
+
 // --- Events ---
 // Events arrive as `codex/event` notifications with `{ msg: EventMsg }`.
 // EventMsg uses the same type discriminators as the MCP server, so our

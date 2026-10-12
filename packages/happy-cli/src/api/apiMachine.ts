@@ -28,6 +28,7 @@ import {
     ForkSourceMissingError,
 } from '@/claude/utils/claudeSessionFork';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
+import { readCodexModelCatalog } from '@/codex/modelCatalog';
 import {
     CodexForkRewindPointNotFoundError,
     forkCodexThread,
@@ -35,6 +36,15 @@ import {
 } from '@/codex/codexThreadFork';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * How stale the published model catalogs may get before the daemon re-reads
+ * them. The registry is a file the user edits (`model_catalog_json`), not
+ * something that changes under us minute to minute, so this is deliberately
+ * slow: a refresh spawns a Codex app-server, and the answer only matters to a
+ * picker that has not been opened yet.
+ */
+const MODEL_CATALOG_REFRESH_MS = 60 * 60 * 1000;
 
 interface ServerToDaemonEvents {
     update: (data: Update) => void;
@@ -149,6 +159,8 @@ export class ApiMachineClient {
     private keepAliveInterval: NodeJS.Timeout | null = null;
     private lastKnownCLIAvailability: CLIAvailability | null = null;
     private lastKnownResumeSupport: ResumeSupport | null = null;
+    private modelCatalogsCheckedAt = 0;
+    private modelCatalogRefresh: Promise<void> | null = null;
     private rpcHandlerManager: RpcHandlerManager;
     private resumeSessionHandler: ((sessionId: string, options?: ResumeSessionOptions) => Promise<SpawnSessionResult>) | null = null;
     private reconnectInterval: NodeJS.Timeout | null = null;
@@ -631,6 +643,55 @@ export class ApiMachineClient {
                 logger.debug('[API MACHINE] Failed to update machine capabilities:', err);
             });
         }
+
+        this.refreshModelCatalogs(newAvailability);
+    }
+
+    /**
+     * Publish the model registry this machine's Codex resolves.
+     *
+     * The registry is not something Happy ships: `model_catalog_json` decides
+     * it, so a gateway model exists only on the machine that added it, and the
+     * app's new-session picker can offer the whole registry rather than a
+     * hardcoded list only if the daemon says what it is. Read at startup and
+     * re-read on a slow timer, because the file is one the user edits while the
+     * daemon runs.
+     *
+     * Nothing is published when the read fails — an older Codex has no
+     * `model/list` — and nothing is written when the list is unchanged:
+     * machine metadata writes are versioned and fanned out to every device, and
+     * paying for that on a list that did not move helps nobody.
+     */
+    private refreshModelCatalogs(availability: CLIAvailability): void {
+        if (!availability.codex || this.shutdownRequested || this.modelCatalogRefresh) {
+            return;
+        }
+        const now = Date.now();
+        if (now - this.modelCatalogsCheckedAt < MODEL_CATALOG_REFRESH_MS) {
+            return;
+        }
+        this.modelCatalogsCheckedAt = now;
+        this.modelCatalogRefresh = (async () => {
+            const catalog = await readCodexModelCatalog();
+            if (catalog === null || catalog.length === 0) {
+                return;
+            }
+            const published = this.machine.metadata?.modelCatalogs?.codex?.models;
+            if (JSON.stringify(published) === JSON.stringify(catalog)) {
+                return;
+            }
+            await this.updateMachineMetadata((metadata) => ({
+                ...(metadata || {} as any),
+                modelCatalogs: {
+                    ...(metadata || {} as any).modelCatalogs,
+                    codex: { models: catalog },
+                },
+            }));
+        })().catch((error) => {
+            logger.debug('[API MACHINE] Failed to refresh the model catalogs:', error);
+        }).finally(() => {
+            this.modelCatalogRefresh = null;
+        });
     }
 
     private startKeepAlive() {

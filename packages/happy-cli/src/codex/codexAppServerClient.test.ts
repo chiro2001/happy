@@ -138,6 +138,59 @@ describe('CodexAppServerClient sandbox integration', () => {
         expect(new CodexAppServerClient().supportsGoalActions()).toBe(false);
     });
 
+    it('reads every page of the machine model registry', async () => {
+        const requests: MockRpcMessage[] = [];
+        mockSpawn.mockImplementation(() => createMockProcess({
+            onRequest: (msg, stdout) => {
+                if (msg.method !== 'model/list' || msg.id == null) return;
+                requests.push(msg);
+                const secondPage = msg.params?.cursor === 'page-2';
+                setTimeout(() => {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: secondPage
+                            ? { data: [{ model: 'deepseek-flash', displayName: 'DeepSeek-Flash' }], nextCursor: null }
+                            : { data: [{ model: 'gpt-6-astra', displayName: 'GPT-6-Astra' }], nextCursor: 'page-2' },
+                    });
+                }, 0);
+            },
+        }));
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+
+        const models = await client.listModels();
+
+        expect(models.map((model) => model.model)).toEqual(['gpt-6-astra', 'deepseek-flash']);
+        expect(requests.map((request) => request.params?.cursor)).toEqual([null, 'page-2']);
+        expect(requests[0]?.params).toEqual(expect.objectContaining({ includeHidden: false }));
+
+        await client.disconnect();
+    });
+
+    it('surfaces a server that has no model registry to read', async () => {
+        mockSpawn.mockImplementation(() => createMockProcess({
+            onRequest: (msg, stdout) => {
+                if (msg.method !== 'model/list' || msg.id == null) return;
+                setTimeout(() => {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        error: { code: -32601, message: 'Method not found' },
+                    });
+                }, 0);
+            },
+        }));
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+
+        await expect(client.listModels()).rejects.toThrow(/model\/list/);
+
+        await client.disconnect();
+    });
+
     it('wraps transport when sandbox is enabled', async () => {
         // Dynamic import to ensure mocks are applied
         const { CodexAppServerClient } = await import('./codexAppServerClient');

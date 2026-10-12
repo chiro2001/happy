@@ -35,6 +35,9 @@ import type {
     ThreadGoalSetResponse,
     ThreadGoalClearParams,
     ThreadGoalClearResponse,
+    ModelListParams,
+    ModelListResponse,
+    CodexModelListEntry,
     Thread,
     InterruptConversationParams,
     ReviewDecision,
@@ -1060,6 +1063,39 @@ export class CodexAppServerClient {
             items: opts.items,
         };
         return await this.request('thread/inject_items', params) as InjectItemsResponse;
+    }
+
+    /**
+     * The model registry Codex resolves for this machine, in the order Codex
+     * itself lists it.
+     *
+     * This is the only honest source for the list: a registry entry a user
+     * added through `model_catalog_json` — a gateway model, say — exists in no
+     * Happy release, and with that file set the built-in list is not what Codex
+     * resolves. The server paginates, so every page is read; the loop bound is
+     * only a guard against a server that keeps handing back a cursor, never a
+     * limit on a real registry.
+     *
+     * Older servers have no `model/list` at all, which surfaces as a rejected
+     * request rather than an empty list — callers that care about the
+     * difference decide what to do with it.
+     */
+    async listModels(opts?: { includeHidden?: boolean; pageLimit?: number }): Promise<CodexModelListEntry[]> {
+        const entries: CodexModelListEntry[] = [];
+        let cursor: string | null = null;
+        for (let page = 0; page < 20; page += 1) {
+            const result = await this.request('model/list', {
+                cursor,
+                limit: opts?.pageLimit ?? 100,
+                includeHidden: opts?.includeHidden ?? false,
+            } satisfies ModelListParams) as ModelListResponse;
+            entries.push(...(result?.data ?? []));
+            cursor = result?.nextCursor ?? null;
+            if (!cursor) {
+                break;
+            }
+        }
+        return entries;
     }
 
     async setGoal(opts: {

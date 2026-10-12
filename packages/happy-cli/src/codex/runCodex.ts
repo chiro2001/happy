@@ -3,6 +3,7 @@ import React from "react";
 import { ApiClient } from '@/api/api';
 import { CodexAppServerClient } from './codexAppServerClient';
 import type { ReasoningEffort } from './codexAppServerTypes';
+import { toCodexModelCatalog } from './modelCatalog';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
@@ -836,6 +837,32 @@ export async function runCodex(opts: {
         logger.debug('[codex]: client.connect begin');
         await client.connect();
         logger.debug('[codex]: client.connect done');
+
+        // Publish the registry this Codex resolves, so the app's model picker
+        // offers the machine's models rather than a list frozen into the app —
+        // a gateway model exists only in this machine's `model_catalog_json`.
+        // Failure is not fatal: an older Codex has no `model/list`, and the app
+        // then falls back to its own list.
+        void (async () => {
+            try {
+                const models = toCodexModelCatalog(await client.listModels());
+                if (models.length === 0) {
+                    return;
+                }
+                // A resuming session already carries the registry from the run
+                // that published it; a metadata write fans out to every device,
+                // so nothing is written when the list has not moved.
+                if (JSON.stringify(session.getMetadata()?.models) === JSON.stringify(models)) {
+                    return;
+                }
+                session.updateMetadata((currentMetadata) => ({
+                    ...currentMetadata,
+                    models,
+                }));
+            } catch (error) {
+                logger.debug('[Codex] Could not publish the model registry:', error);
+            }
+        })();
 
         if (opts.resumeThreadId) {
             await resumeExistingThread({
